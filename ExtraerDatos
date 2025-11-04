@@ -1,0 +1,278 @@
+import uno
+import re
+import pdfplumber
+from urllib.parse import urlparse, unquote
+
+def uno_url_to_path(url):
+    """
+    Convierte una URL de LibreOffice (file://...) a una ruta de sistema.
+    """
+    parsed = urlparse(url)
+    return unquote(parsed.path)
+
+def msgbox(message):
+    """
+    Muestra un cuadro de diálogo simple en LibreOffice.
+    """
+    ctx = uno.getComponentContext()
+    smgr = ctx.ServiceManager
+    toolkit = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+    box = toolkit.createMessageBox(
+        None,
+        uno.Enum("com.sun.star.awt.MessageBoxType", "INFOBOX"),
+        1,
+        "Información",
+        message
+    )
+    box.execute()
+
+def limpiar_registro(record):
+    """
+    Limpia el registro removiendo patrones no deseados derivados de cortes de página,
+    numeración o indicaciones del certificado (como "estudios cursados" o "actividades cursadas").
+    
+    Primero, se preserva el prefijo si el registro inicia con un código y guión (por ejemplo, "16273 - ").
+    Luego se ejecuta:
+      1. Reensamblaje en caso de corte de página.
+      2. Eliminación de restos aislados de numeración.
+      3. Recorte del registro en caso de detectar indicadores como "estudios cursados" o "actividades cursadas".
+    Finalmente, se reensambla el prefijo preservado más el resto del registro limpio.
+    """
+    # Preservar el prefijo con código y guión si existe
+    prefix = ""
+    prefix_match = re.match(r'^([A-Za-z0-9]+(?:\s*-\s*))', record)
+    if prefix_match:
+        prefix = prefix_match.group(1)
+        record = record[len(prefix):]
+    
+    # 1. Reensamblar registro si hay corte por página
+    if "Página" in record and "Certificado analitico" in record:
+        pattern = re.compile(
+            r'^(?P<subject1>.+?)\s*Página\s+\d+\s+de\s+\d+\s*-\s*Certificado\s+analitico\s+de\s+.*?\)\s*(?P<subject2>.+)$',
+            flags=re.IGNORECASE
+        )
+        m = pattern.search(record)
+        if m:
+            record = m.group("subject1").strip() + " " + m.group("subject2").strip()
+    
+    # 2. Eliminar patrones aislados de numeración de página
+    record = re.sub(r'Página\s+\d+\s+de\s+\d+', '', record, flags=re.IGNORECASE)
+    
+    # 3. Recortar el registro si se encuentran palabras clave de certificado
+    footer_indicators = ["estudios cursados", "actividades cursadas"]
+    for indicator in footer_indicators:
+        pos = record.lower().find(indicator)
+        if pos != -1:
+            record = record[:pos].strip()
+            break
+
+    # 4. Si no se halla una fecha, también recortar en base a otros indicadores
+    if not re.search(r'\b\d{2}/\d{2}/\d{4}\b', record):
+        footer_keywords = [
+            "resultado", "a pedido del interesado", "se expide",
+            "certificado analitico", "sello", "firma"
+        ]
+        for kw in footer_keywords:
+            pos = record.lower().find(kw.lower())
+            if pos != -1:
+                record = record[:pos].strip()
+                break
+    
+    cleaned = " ".join(record.split())
+    return prefix + cleaned
+
+def extract_fields(record):
+    """
+    Extrae los 7 campos del registro usando un enfoque progresivo.
+    
+    Se asume que:
+      - Todo lo anterior a la primera fecha (formato dd/mm/aaaa) es el campo "actividades"
+      - Luego se busca la palabra 'Examen' o 'Promoción'. Todo lo anterior se asigna a "nota",
+        y la palabra encontrada se guarda en "aprobado_por".
+      - Posteriormente se esperan tres tokens que corresponden a acta, libro y folio.
+      
+    Si quedan tokens extra, éstos se añaden al final del campo "actividades".
+    """
+    date_match = re.search(r'\b\d{2}/\d{2}/\d{4}\b', record)
+    if not date_match:
+        return None
+    actividades = record[:date_match.start()].strip()
+    fecha = date_match.group()
+    remainder = record[date_match.end():].strip()
+    
+    approved_match = re.search(r'\b(Examen|Promoción)\b', remainder)
+    if not approved_match:
+        return None
+    nota = remainder[:approved_match.start()].strip()
+    aprobado_por = approved_match.group()
+    remainder = remainder[approved_match.end():].strip()
+    
+    tokens = remainder.split()
+    if len(tokens) < 3:
+        return None
+    acta = tokens[0]
+    libro = tokens[1]
+    folio = tokens[2]
+    
+    if len(tokens) > 3:
+        extra_subject = " ".join(tokens[3:])
+        actividades = actividades + " " + extra_subject
+    
+    return {
+        "actividades": actividades,
+        "fecha": fecha,
+        "nota": nota,
+        "aprobado_por": aprobado_por,
+        "acta": acta,
+        "libro": libro,
+        "folio": folio
+    }
+
+def ExtraerDatos(*args):
+    ctx = uno.getComponentContext()
+    smgr = ctx.ServiceManager
+    desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    doc = desktop.getCurrentComponent()
+    
+    # 1. Seleccionar el PDF
+    filePicker = smgr.createInstanceWithContext("com.sun.star.ui.dialogs.FilePicker", ctx)
+    filePicker.setTitle("Seleccionar archivo PDF")
+    filePicker.appendFilter("Archivos PDF (*.pdf)", "*.pdf")
+    defaultDir = "file:///home/cristian/Documentos/ALUMNOS/Analitico%20p-titulo/PDFs%20y%20Excel%20para%20copiar"
+    try:
+        filePicker.setDisplayDirectory(defaultDir)
+    except Exception:
+        pass
+    
+    if filePicker.execute() != 1:
+        msgbox("Operación cancelada. No se seleccionó ningún archivo.")
+        return
+    
+    fileURLs = filePicker.getFiles()
+    if not fileURLs or len(fileURLs) == 0:
+        msgbox("No se seleccionó ningún archivo.")
+        return
+    
+    fileUrl = fileURLs[0]
+    filePath = uno_url_to_path(fileUrl)
+    
+    # 2. Abrir el PDF y extraer el texto (a partir del encabezado)
+    try:
+        pdf = pdfplumber.open(filePath)
+    except Exception as e:
+        msgbox("No se pudo abrir el PDF:\n" + str(e))
+        return
+    
+    dni = None
+    dni_pattern = re.compile(r'\( *DNI *(\d{8}) *\)', re.IGNORECASE)
+    data_lines = []
+    header_found = False
+    
+    for page in pdf.pages:
+        page_text = page.extract_text() or ""
+        if "Certificado Analítico Parcial" in page_text:
+            header_found = True
+        if header_found and dni is None:
+            m = dni_pattern.search(page_text)
+            if m:
+                dni = m.group(1)
+        lines = page_text.splitlines()
+        if not data_lines:
+            for i, line in enumerate(lines):
+                if "Actividades Rendidas" in line and "Fecha" in line:
+                    data_lines.extend(lines[i+1:])
+                    break
+        else:
+            data_lines.extend(lines)
+    pdf.close()
+    
+    if not header_found:
+        msgbox("No se encontró la sección 'Certificado Analítico Parcial'.")
+        return
+    
+    msgbox("Cantidad total de líneas recolectadas: " + str(len(data_lines)))
+    
+    # 3. Agrupar las líneas en registros.
+    # Se asume que una línea que comienza con un código (ej.: "16273 -") indica inicio de registro.
+    registros = []
+    registro_actual = ""
+    subject_start_re = re.compile(r'^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\s*-\s*')
+    for line in data_lines:
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+        if subject_start_re.match(clean_line):
+            if registro_actual:
+                registros.append(registro_actual)
+            registro_actual = clean_line
+        else:
+            registro_actual += " " + clean_line
+    if registro_actual:
+        registros.append(registro_actual)
+    
+    msgbox("Cantidad de registros identificados: " + str(len(registros)))
+    
+    # 4. Normalizar registros y aplicar la limpieza de cabeceras, numeración y certificados
+    processed_records = [" ".join(reg.split()) for reg in registros]
+    processed_records = [limpiar_registro(reg) for reg in processed_records]
+    
+    # 5. Extraer los campos de cada registro; si falla la extracción (por ejemplo, en el último registro),
+    # se usa un fallback que asume que todo el registro es el nombre de la materia.
+    extracted_rows = []
+    for rec in processed_records:
+        fields = extract_fields(rec)
+        if not fields:
+            # Fallback: si el registro inicia con un código se asume que es solo el nombre de la materia.
+            m = re.match(r'^([A-Za-z0-9].+)$', rec)
+            if m:
+                fields = {
+                    "actividades": m.group(1).strip(),
+                    "fecha": "",
+                    "nota": "",
+                    "aprobado_por": "",
+                    "acta": "",
+                    "libro": "",
+                    "folio": ""
+                }
+            else:
+                msgbox("No se pudo parsear el registro:\n" + rec)
+        if fields:
+            extracted_rows.append(fields)
+    
+    msgbox("Se parsearon " + str(len(extracted_rows)) + " registros de datos.")
+    
+    # 6. Pegar el DNI en la hoja "EDITOR" (celda R2)
+    try:
+        editor_sheet = doc.getSheets().getByName("EDITOR")
+        rango_editor = editor_sheet.getCellRangeByName("R2")
+        rango_editor.setString(dni if dni else "DNI no encontrado")
+    except Exception as e:
+        msgbox("Error accediendo a la hoja 'EDITOR':\n" + str(e))
+    
+    # 7. Pegar la tabla en la hoja "Extractor" (a partir de la celda A1)
+    try:
+        extractor_sheet = doc.getSheets().getByName("Extractor")
+        data_array = []
+        for record in extracted_rows:
+            row_data = [
+                record.get("actividades", "").strip(),
+                record.get("fecha", "").strip(),
+                record.get("nota", "").strip(),
+                record.get("aprobado_por", "").strip(),
+                record.get("acta", "").strip(),
+                record.get("libro", "").strip(),
+                record.get("folio", "").strip()
+            ]
+            data_array.append(row_data)
+        if data_array:
+            num_rows = len(data_array)
+            num_cols = 7  # Columnas A a G
+            cell_range = extractor_sheet.getCellRangeByPosition(0, 0, num_cols - 1, num_rows - 1)
+            data_tuple = tuple(tuple(row) for row in data_array)
+            cell_range.setDataArray(data_tuple)
+        else:
+            msgbox("No se extrajeron registros para pegar en 'Extractor'.")
+    except Exception as e:
+        msgbox("Error accediendo a la hoja 'Extractor':\n" + str(e))
+    
+    msgbox("Extracción finalizada.")
