@@ -299,13 +299,37 @@ def ExtraerDatos(*args):
     # 3. Agrupar las líneas en registros.
     # Se asume que una línea que comienza con un código (ej.: "16273 -") indica inicio de registro.
     # MEJORA CRÍTICA: Insertar líneas continuación del nombre ANTES de la fecha, no al final
+    # MEJORA ADICIONAL: Ignorar líneas de encabezados/pies que interrumpen los registros
     registros = []
     registro_actual = ""
     subject_start_re = re.compile(r'^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\s*-\s*')
     
+    # Patrones de líneas a ignorar (encabezados/pies de página)
+    lineas_ignorar = [
+        r'^Actividades\s+(Rendidas|Cursadas)',
+        r'^Resultado\s+Año\s+Periodo',
+        r'^Fecha\s+Nota',
+        r'^A\s+pedido\s+del\s+interesado',
+        r'^se\s+expide\s+el\s+presente',
+        r'^QUIEN\s+CORRESPONDA',
+        r'^Página\s+\d+\s+de\s+\d+',
+        r'^Certificado\s+[Aa]nalítico',
+    ]
+    
+    def es_linea_ignorar(linea):
+        """Determina si una línea debe ser ignorada (encabezado/pie de página)"""
+        for patron in lineas_ignorar:
+            if re.search(patron, linea, re.IGNORECASE):
+                return True
+        return False
+    
     for line in data_lines:
         clean_line = line.strip()
         if not clean_line:
+            continue
+        
+        # Ignorar líneas de encabezado/pie de página
+        if es_linea_ignorar(clean_line):
             continue
         
         # Detectar si es inicio de un nuevo registro (tiene código y guión)
@@ -344,35 +368,7 @@ def ExtraerDatos(*args):
     if registro_actual:
         registros.append(registro_actual)
     
-    msgbox("Cantidad de registros identificados: " + str(len(registros)))
-    
-    # DEBUG ESPECÍFICO: Buscar registros problemáticos (16279, 16280, 16281)
-    debug_problematicos = "DEBUG REGISTROS 16279, 16280, 16281:\n\n"
-    codigos_buscar = ["16279", "16280", "16281"]
-    registros_encontrados = {}
-    
-    for codigo in codigos_buscar:
-        for i, reg in enumerate(registros):
-            if reg.startswith(codigo):
-                registros_encontrados[codigo] = {"index": i, "original": reg}
-                preview = reg[:250] if len(reg) > 250 else reg
-                debug_problematicos += f"[{codigo}] PASO 1 - AGRUPADO (registro #{i+1}):\n{preview}\n\n"
-                break
-    
-    if registros_encontrados:
-        msgbox(debug_problematicos)
-    else:
-        msgbox("No se encontraron los registros 16279, 16280, 16281 en los registros agrupados.")
-    
-    # DEBUG: Mostrar los primeros 3 registros para verificar la agrupación
-    debug_msg = "DEBUG 1/3 - PRIMEROS 3 REGISTROS AGRUPADOS:\n\n"
-    for i, reg in enumerate(registros[:3]):
-        preview = reg[:200] if len(reg) > 200 else reg
-        debug_msg += f"REGISTRO {i+1}:\n{preview}\n"
-        if len(reg) > 200:
-            debug_msg += "...\n"
-        debug_msg += "\n"
-    msgbox(debug_msg)
+    # Registros agrupados correctamente
     
     # 4. Normalizar registros: eliminar saltos de línea y espacios múltiples
     # Esto es crítico para nombres de materias que están en múltiples líneas
@@ -386,28 +382,6 @@ def ExtraerDatos(*args):
     
     # 5. Aplicar limpieza de cabeceras, numeración y certificados
     processed_records = [limpiar_registro(reg) for reg in normalized_records]
-    
-    # DEBUG ESPECÍFICO PASO 2: Mostrar registros problemáticos después de limpiar
-    if registros_encontrados:
-        debug_problematicos2 = "DEBUG REGISTROS 16279, 16280, 16281:\n\n"
-        for codigo in codigos_buscar:
-            if codigo in registros_encontrados:
-                idx = registros_encontrados[codigo]["index"]
-                if idx < len(processed_records):
-                    reg = processed_records[idx]
-                    preview = reg[:250] if len(reg) > 250 else reg
-                    debug_problematicos2 += f"[{codigo}] PASO 2 - DESPUÉS LIMPIAR:\n{preview}\n\n"
-        msgbox(debug_problematicos2)
-    
-    # DEBUG: Mostrar los primeros 3 registros DESPUÉS de limpiar
-    debug_msg2 = "DEBUG 2/3 - DESPUÉS DE LIMPIAR:\n\n"
-    for i, reg in enumerate(processed_records[:3]):
-        preview = reg[:200] if len(reg) > 200 else reg
-        debug_msg2 += f"REGISTRO {i+1}:\n{preview}\n"
-        if len(reg) > 200:
-            debug_msg2 += "...\n"
-        debug_msg2 += "\n"
-    msgbox(debug_msg2)
     
     # 6. Extraer los campos de cada registro
     extracted_rows = []
@@ -431,39 +405,8 @@ def ExtraerDatos(*args):
         if fields:
             extracted_rows.append(fields)
     
-    msgbox("Se parsearon " + str(len(extracted_rows)) + " registros de datos.")
     
-    # DEBUG ESPECÍFICO PASO 3: Mostrar registros problemáticos después de extraer campos
-    if registros_encontrados:
-        debug_problematicos3 = "DEBUG REGISTROS 16279, 16280, 16281:\n\n"
-        for codigo in codigos_buscar:
-            if codigo in registros_encontrados:
-                idx = registros_encontrados[codigo]["index"]
-                if idx < len(extracted_rows):
-                    fields = extracted_rows[idx]
-                    actividades = fields.get('actividades', '')
-                    debug_problematicos3 += f"[{codigo}] PASO 3 - CAMPOS EXTRAÍDOS:\n"
-                    debug_problematicos3 += f"  Materia: {actividades}\n"
-                    debug_problematicos3 += f"  Fecha: {fields.get('fecha', '')}\n"
-                    debug_problematicos3 += f"  Col C: {fields.get('col_c', '')}\n"
-                    debug_problematicos3 += f"  Col D: {fields.get('col_d', '')}\n\n"
-        msgbox(debug_problematicos3)
-    
-    # DEBUG: Mostrar los primeros 3 registros extraídos
-    debug_msg3 = "DEBUG 3/3 - CAMPOS EXTRAÍDOS:\n\n"
-    for i, fields in enumerate(extracted_rows[:3]):
-        actividades = fields.get('actividades', '')
-        act_preview = actividades[:100] if len(actividades) > 100 else actividades
-        debug_msg3 += f"REGISTRO {i+1}:\n"
-        debug_msg3 += f"  Materia: {act_preview}"
-        if len(actividades) > 100:
-            debug_msg3 += "..."
-        debug_msg3 += f"\n  Fecha: {fields.get('fecha', '')}\n"
-        debug_msg3 += f"  Col C: {fields.get('col_c', '')}\n"
-        debug_msg3 += f"  Col D: {fields.get('col_d', '')}\n\n"
-    msgbox(debug_msg3)
-    
-    # 6. Pegar el DNI en la hoja "EDITOR" (celda R2)
+    # 7. Pegar el DNI en la hoja "EDITOR" (celda R2)
     try:
         editor_sheet = doc.getSheets().getByName("EDITOR")
         rango_editor = editor_sheet.getCellRangeByName("R2")
@@ -471,7 +414,7 @@ def ExtraerDatos(*args):
     except Exception as e:
         msgbox("Error accediendo a la hoja 'EDITOR':\n" + str(e))
     
-    # 7. Pegar la tabla en la hoja "Extractor" (a partir de la celda A1)
+    # 8. Pegar la tabla en la hoja "Extractor" (a partir de la celda A1)
     try:
         extractor_sheet = doc.getSheets().getByName("Extractor")
         data_array = []
