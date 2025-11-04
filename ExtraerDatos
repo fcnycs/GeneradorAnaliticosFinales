@@ -83,49 +83,153 @@ def limpiar_registro(record):
 
 def extract_fields(record):
     """
-    Extrae los 7 campos del registro usando un enfoque progresivo.
+    Extrae los campos del registro en 7 columnas:
     
-    Se asume que:
-      - Todo lo anterior a la primera fecha (formato dd/mm/aaaa) es el campo "actividades"
-      - Luego se busca la palabra 'Examen' o 'Promoción'. Todo lo anterior se asigna a "nota",
-        y la palabra encontrada se guarda en "aprobado_por".
-      - Posteriormente se esperan tres tokens que corresponden a acta, libro y folio.
+    Formato 1 (Equivalencias):
+      Columna A: Código-Nombre
+      Columna B: Fecha
+      Columna C: Aprobado/Ausente
+      Columna D: Equivalencia
+      Columna E: DFCNyCS número/año
+      Columnas F-G: (vacías)
       
-    Si quedan tokens extra, éstos se añaden al final del campo "actividades".
+    Formato 2 (Exámenes/Promociones):
+      Columna A: Código-Nombre
+      Columna B: Fecha
+      Columna C: Nota
+      Columna D: Examen/Promoción
+      Columna E: Acta
+      Columna F: Libro
+      Columna G: Folio
     """
-    date_match = re.search(r'\b\d{2}/\d{2}/\d{4}\b', record)
+    # Normalizar espacios múltiples primero
+    record = " ".join(record.split())
+    
+    # Buscar la fecha
+    date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', record)
     if not date_match:
         return None
+    
+    # Dividir en partes: antes de la fecha y después de la fecha
     actividades = record[:date_match.start()].strip()
-    fecha = date_match.group()
+    fecha = date_match.group(1)
     remainder = record[date_match.end():].strip()
     
-    approved_match = re.search(r'\b(Examen|Promoción)\b', remainder)
-    if not approved_match:
-        return None
-    nota = remainder[:approved_match.start()].strip()
-    aprobado_por = approved_match.group()
-    remainder = remainder[approved_match.end():].strip()
+    # Inicializar todos los campos
+    col_c = ""  # Nota o Aprobado/Ausente
+    col_d = ""  # Tipo (Examen/Promoción/Equivalencia)
+    col_e = ""  # Acta o Resolución
+    col_f = ""  # Libro
+    col_g = ""  # Folio
     
+    # Tokenizar el resto
     tokens = remainder.split()
-    if len(tokens) < 3:
+    if not tokens:
         return None
-    acta = tokens[0]
-    libro = tokens[1]
-    folio = tokens[2]
     
-    if len(tokens) > 3:
-        extra_subject = " ".join(tokens[3:])
-        actividades = actividades + " " + extra_subject
+    idx = 0
+    
+    # Detectar el tipo de registro
+    if idx < len(tokens):
+        # CASO 1: "Aprobado" o "Ausente" - puede ser Equivalencia o Examen
+        if tokens[idx] in ["Aprobado", "Ausente"]:
+            col_c = tokens[idx]
+            idx += 1
+            
+            # Buscar el tipo: "Equivalencia" o "Examen" o "Promoción"
+            if idx < len(tokens) and tokens[idx] in ["Equivalencia", "Examen", "Promoción"]:
+                col_d = tokens[idx]
+                idx += 1
+                
+                # Si es Equivalencia, buscar el patrón DFCNyCS
+                if col_d == "Equivalencia":
+                    # Buscar el patrón DFCNyCS seguido de número/año
+                    resolucion_parts = []
+                    if idx < len(tokens) and tokens[idx] == "DFCNyCS":
+                        resolucion_parts.append(tokens[idx])
+                        idx += 1
+                        
+                        # Capturar el número/año que sigue
+                        while idx < len(tokens):
+                            token = tokens[idx]
+                            # Si contiene números o es una barra, es parte de la resolución
+                            if re.search(r'\d', token) or token == "/":
+                                resolucion_parts.append(token)
+                                idx += 1
+                                # Si ya encontramos el patrón completo número/año, salir
+                                if re.search(r'\d+/\d+', " ".join(resolucion_parts)):
+                                    break
+                            else:
+                                break
+                        
+                        col_e = " ".join(resolucion_parts)
+                
+                # Si es Examen o Promoción, buscar acta/libro/folio
+                elif col_d in ["Examen", "Promoción"]:
+                    if idx < len(tokens):
+                        col_e = tokens[idx]  # Acta
+                        idx += 1
+                    if idx < len(tokens):
+                        col_f = tokens[idx]  # Libro
+                        idx += 1
+                    if idx < len(tokens):
+                        col_g = tokens[idx]  # Folio
+                        idx += 1
+            
+        # CASO 2: Examen/Promoción - detectar nota numérica
+        elif re.match(r'^\d+$', tokens[idx]) or re.match(r'^\d+\(', tokens[idx]):
+            # Capturar la nota con su descripción en paréntesis si existe
+            if re.match(r'^\d+$', tokens[idx]):
+                col_c = tokens[idx]
+                idx += 1
+                # Buscar el texto en paréntesis (puede estar en uno o más tokens)
+                paren_parts = []
+                while idx < len(tokens):
+                    if tokens[idx].startswith('('):
+                        paren_parts.append(tokens[idx])
+                        if tokens[idx].endswith(')'):
+                            idx += 1
+                            break
+                        idx += 1
+                    elif paren_parts and not tokens[idx-1].endswith(')'):
+                        paren_parts.append(tokens[idx])
+                        if tokens[idx].endswith(')'):
+                            idx += 1
+                            break
+                        idx += 1
+                    else:
+                        break
+                if paren_parts:
+                    col_c += " " + " ".join(paren_parts)
+            else:
+                # La nota ya incluye el paréntesis
+                col_c = tokens[idx]
+                idx += 1
+            
+            # Buscar "Examen" o "Promoción"
+            if idx < len(tokens) and tokens[idx] in ["Examen", "Promoción"]:
+                col_d = tokens[idx]
+                idx += 1
+            
+            # Los siguientes 3 tokens son acta, libro, folio
+            if idx < len(tokens):
+                col_e = tokens[idx]  # Acta
+                idx += 1
+            if idx < len(tokens):
+                col_f = tokens[idx]  # Libro
+                idx += 1
+            if idx < len(tokens):
+                col_g = tokens[idx]  # Folio
+                idx += 1
     
     return {
-        "actividades": actividades,
+        "actividades": actividades.strip(),
         "fecha": fecha,
-        "nota": nota,
-        "aprobado_por": aprobado_por,
-        "acta": acta,
-        "libro": libro,
-        "folio": folio
+        "col_c": col_c,
+        "col_d": col_d,
+        "col_e": col_e,
+        "col_f": col_f,
+        "col_g": col_g
     }
 
 def ExtraerDatos(*args):
@@ -194,30 +298,78 @@ def ExtraerDatos(*args):
     
     # 3. Agrupar las líneas en registros.
     # Se asume que una línea que comienza con un código (ej.: "16273 -") indica inicio de registro.
+    # MEJORA: Detectar líneas que son continuación del nombre (sin fecha) vs líneas con datos (con fecha)
     registros = []
     registro_actual = ""
     subject_start_re = re.compile(r'^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\s*-\s*')
+    
     for line in data_lines:
         clean_line = line.strip()
         if not clean_line:
             continue
+        
+        # Detectar si es inicio de un nuevo registro (tiene código y guión)
         if subject_start_re.match(clean_line):
             if registro_actual:
                 registros.append(registro_actual)
             registro_actual = clean_line
         else:
-            registro_actual += " " + clean_line
+            # Esta línea NO tiene código
+            if registro_actual:
+                # Verificar si el registro actual ya tiene fecha
+                tiene_fecha_registro = bool(re.search(r'\b\d{2}/\d{2}/\d{4}\b', registro_actual))
+                tiene_fecha_linea = bool(re.search(r'\b\d{2}/\d{2}/\d{4}\b', clean_line))
+                
+                if not tiene_fecha_registro and not tiene_fecha_linea:
+                    # Esta línea es parte del nombre de la materia (sin fecha en ambos)
+                    # La insertamos como parte del nombre, al final del texto actual
+                    registro_actual += " " + clean_line
+                else:
+                    # Ya hay fecha en el registro o en esta línea, agregar normalmente
+                    registro_actual += " " + clean_line
+            else:
+                registro_actual = clean_line
+                
     if registro_actual:
         registros.append(registro_actual)
     
     msgbox("Cantidad de registros identificados: " + str(len(registros)))
     
-    # 4. Normalizar registros y aplicar la limpieza de cabeceras, numeración y certificados
-    processed_records = [" ".join(reg.split()) for reg in registros]
-    processed_records = [limpiar_registro(reg) for reg in processed_records]
+    # DEBUG: Mostrar los primeros 3 registros para verificar la agrupación
+    debug_msg = "DEBUG 1/3 - REGISTROS AGRUPADOS:\n\n"
+    for i, reg in enumerate(registros[:3]):
+        # Mostrar los primeros 200 caracteres
+        preview = reg[:200] if len(reg) > 200 else reg
+        debug_msg += f"REGISTRO {i+1}:\n{preview}\n"
+        if len(reg) > 200:
+            debug_msg += "...\n"
+        debug_msg += "\n"
+    msgbox(debug_msg)
     
-    # 5. Extraer los campos de cada registro; si falla la extracción (por ejemplo, en el último registro),
-    # se usa un fallback que asume que todo el registro es el nombre de la materia.
+    # 4. Normalizar registros: eliminar saltos de línea y espacios múltiples
+    # Esto es crítico para nombres de materias que están en múltiples líneas
+    normalized_records = []
+    for reg in registros:
+        # Reemplazar saltos de línea por espacios
+        reg = reg.replace('\n', ' ').replace('\r', ' ')
+        # Eliminar espacios múltiples
+        reg = " ".join(reg.split())
+        normalized_records.append(reg)
+    
+    # 5. Aplicar limpieza de cabeceras, numeración y certificados
+    processed_records = [limpiar_registro(reg) for reg in normalized_records]
+    
+    # DEBUG: Mostrar los primeros 3 registros DESPUÉS de limpiar
+    debug_msg2 = "DEBUG 2/3 - DESPUÉS DE LIMPIAR:\n\n"
+    for i, reg in enumerate(processed_records[:3]):
+        preview = reg[:200] if len(reg) > 200 else reg
+        debug_msg2 += f"REGISTRO {i+1}:\n{preview}\n"
+        if len(reg) > 200:
+            debug_msg2 += "...\n"
+        debug_msg2 += "\n"
+    msgbox(debug_msg2)
+    
+    # 6. Extraer los campos de cada registro
     extracted_rows = []
     for rec in processed_records:
         fields = extract_fields(rec)
@@ -228,18 +380,32 @@ def ExtraerDatos(*args):
                 fields = {
                     "actividades": m.group(1).strip(),
                     "fecha": "",
-                    "nota": "",
-                    "aprobado_por": "",
-                    "acta": "",
-                    "libro": "",
-                    "folio": ""
+                    "col_c": "",
+                    "col_d": "",
+                    "col_e": "",
+                    "col_f": "",
+                    "col_g": ""
                 }
             else:
-                msgbox("No se pudo parsear el registro:\n" + rec)
+                msgbox("No se pudo parsear el registro:\n" + rec[:150])
         if fields:
             extracted_rows.append(fields)
     
     msgbox("Se parsearon " + str(len(extracted_rows)) + " registros de datos.")
+    
+    # DEBUG: Mostrar los primeros 3 registros extraídos
+    debug_msg3 = "DEBUG 3/3 - CAMPOS EXTRAÍDOS:\n\n"
+    for i, fields in enumerate(extracted_rows[:3]):
+        actividades = fields.get('actividades', '')
+        act_preview = actividades[:100] if len(actividades) > 100 else actividades
+        debug_msg3 += f"REGISTRO {i+1}:\n"
+        debug_msg3 += f"  Materia: {act_preview}"
+        if len(actividades) > 100:
+            debug_msg3 += "..."
+        debug_msg3 += f"\n  Fecha: {fields.get('fecha', '')}\n"
+        debug_msg3 += f"  Col C: {fields.get('col_c', '')}\n"
+        debug_msg3 += f"  Col D: {fields.get('col_d', '')}\n\n"
+    msgbox(debug_msg3)
     
     # 6. Pegar el DNI en la hoja "EDITOR" (celda R2)
     try:
@@ -257,13 +423,14 @@ def ExtraerDatos(*args):
             row_data = [
                 record.get("actividades", "").strip(),
                 record.get("fecha", "").strip(),
-                record.get("nota", "").strip(),
-                record.get("aprobado_por", "").strip(),
-                record.get("acta", "").strip(),
-                record.get("libro", "").strip(),
-                record.get("folio", "").strip()
+                record.get("col_c", "").strip(),
+                record.get("col_d", "").strip(),
+                record.get("col_e", "").strip(),
+                record.get("col_f", "").strip(),
+                record.get("col_g", "").strip()
             ]
             data_array.append(row_data)
+        
         if data_array:
             num_rows = len(data_array)
             num_cols = 7  # Columnas A a G
