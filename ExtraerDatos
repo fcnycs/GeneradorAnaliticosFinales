@@ -1,14 +1,23 @@
 import uno
 import re
+import os
+import sys
 import pdfplumber
 from urllib.parse import urlparse, unquote
 
 def uno_url_to_path(url):
     """
     Convierte una URL de LibreOffice (file://...) a una ruta de sistema.
+    Funciona en Windows y Linux.
     """
     parsed = urlparse(url)
-    return unquote(parsed.path)
+    path = unquote(parsed.path)
+    # En Windows, urlparse deja una barra extra al inicio antes de la letra de unidad
+    # Ejemplo: file:///D:/carpeta/archivo.pdf -> /D:/carpeta/archivo.pdf
+    # Hay que sacar esa barra para que quede D:/carpeta/archivo.pdf
+    if sys.platform.startswith('win') and re.match(r'^/[A-Za-z]:', path):
+        path = path[1:]
+    return path
 
 def msgbox(message):
     """
@@ -29,23 +38,14 @@ def msgbox(message):
 def limpiar_registro(record):
     """
     Limpia el registro removiendo patrones no deseados derivados de cortes de página,
-    numeración o indicaciones del certificado (como "estudios cursados" o "actividades cursadas").
-    
-    Primero, se preserva el prefijo si el registro inicia con un código y guión (por ejemplo, "16273 - ").
-    Luego se ejecuta:
-      1. Reensamblaje en caso de corte de página.
-      2. Eliminación de restos aislados de numeración.
-      3. Recorte del registro en caso de detectar indicadores como "estudios cursados" o "actividades cursadas".
-    Finalmente, se reensambla el prefijo preservado más el resto del registro limpio.
+    numeración o indicaciones del certificado.
     """
-    # Preservar el prefijo con código y guión si existe
     prefix = ""
     prefix_match = re.match(r'^([A-Za-z0-9]+(?:\s*-\s*))', record)
     if prefix_match:
         prefix = prefix_match.group(1)
         record = record[len(prefix):]
     
-    # 1. Reensamblar registro si hay corte por página
     if "Página" in record and "Certificado analitico" in record:
         pattern = re.compile(
             r'^(?P<subject1>.+?)\s*Página\s+\d+\s+de\s+\d+\s*-\s*Certificado\s+analitico\s+de\s+.*?\)\s*(?P<subject2>.+)$',
@@ -55,10 +55,14 @@ def limpiar_registro(record):
         if m:
             record = m.group("subject1").strip() + " " + m.group("subject2").strip()
     
-    # 2. Eliminar patrones aislados de numeración de página
     record = re.sub(r'Página\s+\d+\s+de\s+\d+', '', record, flags=re.IGNORECASE)
     
-    # 3. Recortar el registro si se encuentran palabras clave de certificado
+    # Red de seguridad: si por algún motivo "certificado en <ciudad>" terminó
+    # adentro de un registro, recortar todo desde ahí en adelante.
+    cert_match = re.search(r'\s+certificado\s+en\s+', record, re.IGNORECASE)
+    if cert_match:
+        record = record[:cert_match.start()].strip()
+    
     footer_indicators = ["estudios cursados", "actividades cursadas"]
     for indicator in footer_indicators:
         pos = record.lower().find(indicator)
@@ -66,7 +70,6 @@ def limpiar_registro(record):
             record = record[:pos].strip()
             break
 
-    # 4. Si no se halla una fecha, también recortar en base a otros indicadores
     if not re.search(r'\b\d{2}/\d{2}/\d{4}\b', record):
         footer_keywords = [
             "resultado", "a pedido del interesado", "se expide",
@@ -83,80 +86,50 @@ def limpiar_registro(record):
 
 def extract_fields(record):
     """
-    Extrae los campos del registro en 7 columnas:
-    
-    Formato 1 (Equivalencias):
-      Columna A: Código-Nombre
-      Columna B: Fecha
-      Columna C: Aprobado/Ausente
-      Columna D: Equivalencia
-      Columna E: DFCNyCS número/año
-      Columnas F-G: (vacías)
-      
-    Formato 2 (Exámenes/Promociones):
-      Columna A: Código-Nombre
-      Columna B: Fecha
-      Columna C: Nota
-      Columna D: Examen/Promoción
-      Columna E: Acta
-      Columna F: Libro
-      Columna G: Folio
+    Extrae los campos del registro en 7 columnas.
     """
-    # Normalizar espacios múltiples primero
     record = " ".join(record.split())
     
-    # Buscar la fecha
     date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', record)
     if not date_match:
         return None
     
-    # Dividir en partes: antes de la fecha y después de la fecha
     actividades = record[:date_match.start()].strip()
     fecha = date_match.group(1)
     remainder = record[date_match.end():].strip()
     
-    # Inicializar todos los campos
-    col_c = ""  # Nota o Aprobado/Ausente
-    col_d = ""  # Tipo (Examen/Promoción/Equivalencia)
-    col_e = ""  # Acta o Resolución
-    col_f = ""  # Libro
-    col_g = ""  # Folio
+    col_c = ""
+    col_d = ""
+    col_e = ""
+    col_f = ""
+    col_g = ""
     
-    # Tokenizar el resto
     tokens = remainder.split()
     if not tokens:
         return None
     
     idx = 0
     
-    # Detectar el tipo de registro
     if idx < len(tokens):
-        # CASO 1: "Aprobado" o "Ausente" - puede ser Equivalencia o Examen
         if tokens[idx] in ["Aprobado", "Ausente"]:
             col_c = tokens[idx]
             idx += 1
             
-            # Buscar el tipo: "Equivalencia" o "Examen" o "Promoción"
             if idx < len(tokens) and tokens[idx] in ["Equivalencia", "Examen", "Promoción"]:
                 col_d = tokens[idx]
                 idx += 1
                 
-                # Si es Equivalencia, buscar el patrón DFCNyCS
                 if col_d == "Equivalencia":
-                    # Buscar el patrón DFCNyCS seguido de número/año
                     resolucion_parts = []
                     if idx < len(tokens) and tokens[idx] == "DFCNyCS":
                         resolucion_parts.append(tokens[idx])
                         idx += 1
                         
-                        # Capturar el número/año que sigue
                         while idx < len(tokens):
                             token = tokens[idx]
-                            # Si contiene números o es una barra, es parte de la resolución
                             if re.search(r'\d', token) or token == "/":
                                 resolucion_parts.append(token)
                                 idx += 1
-                                # Si ya encontramos el patrón completo número/año, salir
                                 if re.search(r'\d+/\d+', " ".join(resolucion_parts)):
                                     break
                             else:
@@ -164,25 +137,21 @@ def extract_fields(record):
                         
                         col_e = " ".join(resolucion_parts)
                 
-                # Si es Examen o Promoción, buscar acta/libro/folio
                 elif col_d in ["Examen", "Promoción"]:
                     if idx < len(tokens):
-                        col_e = tokens[idx]  # Acta
+                        col_e = tokens[idx]
                         idx += 1
                     if idx < len(tokens):
-                        col_f = tokens[idx]  # Libro
+                        col_f = tokens[idx]
                         idx += 1
                     if idx < len(tokens):
-                        col_g = tokens[idx]  # Folio
+                        col_g = tokens[idx]
                         idx += 1
             
-        # CASO 2: Examen/Promoción - detectar nota numérica
         elif re.match(r'^\d+$', tokens[idx]) or re.match(r'^\d+\(', tokens[idx]):
-            # Capturar la nota con su descripción en paréntesis si existe
             if re.match(r'^\d+$', tokens[idx]):
                 col_c = tokens[idx]
                 idx += 1
-                # Buscar el texto en paréntesis (puede estar en uno o más tokens)
                 paren_parts = []
                 while idx < len(tokens):
                     if tokens[idx].startswith('('):
@@ -202,24 +171,21 @@ def extract_fields(record):
                 if paren_parts:
                     col_c += " " + " ".join(paren_parts)
             else:
-                # La nota ya incluye el paréntesis
                 col_c = tokens[idx]
                 idx += 1
             
-            # Buscar "Examen" o "Promoción"
             if idx < len(tokens) and tokens[idx] in ["Examen", "Promoción"]:
                 col_d = tokens[idx]
                 idx += 1
             
-            # Los siguientes 3 tokens son acta, libro, folio
             if idx < len(tokens):
-                col_e = tokens[idx]  # Acta
+                col_e = tokens[idx]
                 idx += 1
             if idx < len(tokens):
-                col_f = tokens[idx]  # Libro
+                col_f = tokens[idx]
                 idx += 1
             if idx < len(tokens):
-                col_g = tokens[idx]  # Folio
+                col_g = tokens[idx]
                 idx += 1
     
     return {
@@ -242,9 +208,21 @@ def ExtraerDatos(*args):
     filePicker = smgr.createInstanceWithContext("com.sun.star.ui.dialogs.FilePicker", ctx)
     filePicker.setTitle("Seleccionar archivo PDF")
     filePicker.appendFilter("Archivos PDF (*.pdf)", "*.pdf")
-    defaultDir = "file:///home/cristian/Documentos/ALUMNOS/Analitico%20p-titulo/PDFs%20y%20Excel%20para%20copiar"
+    # Carpeta por defecto donde se guardan los PDFs de los analíticos.
+    # Probamos rutas posibles según el sistema; si ninguna existe, el FilePicker
+    # abrirá en la última carpeta usada o en una por defecto del sistema.
     try:
-        filePicker.setDisplayDirectory(defaultDir)
+        rutas_posibles = [
+            r"D:\Documentos Personales\Downloads\PDFS para extraer (Analiticos)",  # Casa (Windows)
+            "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo/PDFs y Excel para copiar",  # Trabajo (Linux)
+        ]
+        for ruta in rutas_posibles:
+            if os.path.isdir(ruta):
+                # Normalizar a URL file:/// (en Windows hay que escapar las barras invertidas)
+                ruta_normalizada = ruta.replace("\\", "/")
+                default_dir_url = "file:///" + ruta_normalizada.lstrip("/")
+                filePicker.setDisplayDirectory(default_dir_url)
+                break
     except Exception:
         pass
     
@@ -264,11 +242,25 @@ def ExtraerDatos(*args):
     try:
         pdf = pdfplumber.open(filePath)
     except Exception as e:
-        msgbox("No se pudo abrir el PDF:\n" + str(e))
+        msgbox("No se pudo abrir el PDF:\n" + str(e) + "\n\nRuta interpretada:\n" + filePath)
         return
     
     dni = None
+    apellido = None
+    nombres = None
+    genero = None  # "el Sr. " o "la Srta. " (con espacio final, como espera Datos.V4)
+    
     dni_pattern = re.compile(r'\( *DNI *(\d{8}) *\)', re.IGNORECASE)
+    # Captura: "el alumno APELLIDO, NOMBRES ( DNI ..." o "la alumna APELLIDO, NOMBRES ( DNI ..."
+    # El apellido puede tener varias palabras (apellidos compuestos). El nombre también.
+    # Cortamos al llegar a la coma (para apellido) y al "(" del DNI (para nombres).
+    persona_pattern = re.compile(
+        r'(?P<tipo>el\s+alumno|la\s+alumna)\s+'
+        r'(?P<apellido>[^,()]+?)\s*,\s*'
+        r'(?P<nombres>[^,()]+?)\s*\(\s*DNI',
+        re.IGNORECASE
+    )
+    
     data_lines = []
     header_found = False
     
@@ -280,6 +272,18 @@ def ExtraerDatos(*args):
             m = dni_pattern.search(page_text)
             if m:
                 dni = m.group(1)
+        if header_found and apellido is None:
+            # Normalizar saltos de línea (a veces el bloque viene partido en dos renglones)
+            texto_plano = " ".join(page_text.split())
+            m = persona_pattern.search(texto_plano)
+            if m:
+                apellido = m.group("apellido").strip()
+                nombres = m.group("nombres").strip()
+                tipo = m.group("tipo").lower().strip()
+                if "alumna" in tipo:
+                    genero = "la Srta. "
+                else:
+                    genero = "el Sr. "
         lines = page_text.splitlines()
         if not data_lines:
             for i, line in enumerate(lines):
@@ -297,14 +301,15 @@ def ExtraerDatos(*args):
     msgbox("Cantidad total de líneas recolectadas: " + str(len(data_lines)))
     
     # 3. Agrupar las líneas en registros.
-    # Se asume que una línea que comienza con un código (ej.: "16273 -") indica inicio de registro.
-    # MEJORA CRÍTICA: Insertar líneas continuación del nombre ANTES de la fecha, no al final
-    # MEJORA ADICIONAL: Ignorar líneas de encabezados/pies que interrumpen los registros
     registros = []
     registro_actual = ""
     subject_start_re = re.compile(r'^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\s*-\s*')
     
-    # Patrones de líneas a ignorar (encabezados/pies de página)
+    # Patrón que marca el fin del documento (pie de página final).
+    # Cuando aparece "certificado en <CIUDAD>" significa que ya pasamos la
+    # última materia y empezó la fórmula de cierre del analítico.
+    fin_documento_re = re.compile(r'certificado\s+en\s+', re.IGNORECASE)
+    
     lineas_ignorar = [
         r'^Actividades\s+(Rendidas|Cursadas)',
         r'^Resultado\s+Año\s+Periodo',
@@ -317,7 +322,6 @@ def ExtraerDatos(*args):
     ]
     
     def es_linea_ignorar(linea):
-        """Determina si una línea debe ser ignorada (encabezado/pie de página)"""
         for patron in lineas_ignorar:
             if re.search(patron, linea, re.IGNORECASE):
                 return True
@@ -328,39 +332,47 @@ def ExtraerDatos(*args):
         if not clean_line:
             continue
         
-        # Ignorar líneas de encabezado/pie de página
+        # Si detectamos "certificado en <CIUDAD>" es el cierre del documento:
+        # cortamos acá. Pero ojo: la línea puede tener parte del nombre de la
+        # última materia ANTES de esa frase (cuando el PDF las junta en un
+        # mismo renglón). En ese caso, recortamos hasta esa frase y lo que
+        # queda lo procesamos normalmente; después del break, listo.
+        fin_match = fin_documento_re.search(clean_line)
+        if fin_match:
+            recorte = clean_line[:fin_match.start()].strip()
+            if recorte and not es_linea_ignorar(recorte) and not subject_start_re.match(recorte):
+                # Es continuación de la materia anterior: agregarla antes de la fecha
+                if registro_actual:
+                    fecha_match = re.search(r'\b\d{2}/\d{2}/\d{4}\b', registro_actual)
+                    if fecha_match:
+                        pos_fecha = fecha_match.start()
+                        registro_actual = registro_actual[:pos_fecha] + recorte + " " + registro_actual[pos_fecha:]
+                    else:
+                        registro_actual += " " + recorte
+            break
+        
         if es_linea_ignorar(clean_line):
             continue
         
-        # Detectar si es inicio de un nuevo registro (tiene código y guión)
         if subject_start_re.match(clean_line):
             if registro_actual:
                 registros.append(registro_actual)
             registro_actual = clean_line
         else:
-            # Esta línea NO tiene código
             if registro_actual:
-                # Verificar si hay fecha en el registro actual y en esta línea
                 tiene_fecha_registro = bool(re.search(r'\b\d{2}/\d{2}/\d{4}\b', registro_actual))
                 tiene_fecha_linea = bool(re.search(r'\b\d{2}/\d{2}/\d{4}\b', clean_line))
                 
                 if not tiene_fecha_registro and not tiene_fecha_linea:
-                    # Esta línea es continuación del nombre de la materia
-                    # SIMPLEMENTE agregarla al final (la fecha vendrá después)
                     registro_actual += " " + clean_line
                 elif tiene_fecha_registro and not tiene_fecha_linea:
-                    # El registro YA tiene fecha, esta línea NO tiene fecha
-                    # Buscar la posición de la fecha e insertar ANTES de ella
                     fecha_match = re.search(r'\b\d{2}/\d{2}/\d{4}\b', registro_actual)
                     if fecha_match:
                         pos_fecha = fecha_match.start()
-                        # Insertar la línea justo antes de la fecha
                         registro_actual = registro_actual[:pos_fecha] + clean_line + " " + registro_actual[pos_fecha:]
                     else:
-                        # Por seguridad, si no encontramos la fecha, agregar al final
                         registro_actual += " " + clean_line
                 else:
-                    # Otros casos: agregar normalmente
                     registro_actual += " " + clean_line
             else:
                 registro_actual = clean_line
@@ -368,27 +380,21 @@ def ExtraerDatos(*args):
     if registro_actual:
         registros.append(registro_actual)
     
-    # Registros agrupados correctamente
-    
-    # 4. Normalizar registros: eliminar saltos de línea y espacios múltiples
-    # Esto es crítico para nombres de materias que están en múltiples líneas
+    # 4. Normalizar registros
     normalized_records = []
     for reg in registros:
-        # Reemplazar saltos de línea por espacios
         reg = reg.replace('\n', ' ').replace('\r', ' ')
-        # Eliminar espacios múltiples
         reg = " ".join(reg.split())
         normalized_records.append(reg)
     
-    # 5. Aplicar limpieza de cabeceras, numeración y certificados
+    # 5. Limpiar registros
     processed_records = [limpiar_registro(reg) for reg in normalized_records]
     
-    # 6. Extraer los campos de cada registro
+    # 6. Extraer campos
     extracted_rows = []
     for rec in processed_records:
         fields = extract_fields(rec)
         if not fields:
-            # Fallback: si el registro inicia con un código se asume que es solo el nombre de la materia.
             m = re.match(r'^([A-Za-z0-9].+)$', rec)
             if m:
                 fields = {
@@ -405,16 +411,29 @@ def ExtraerDatos(*args):
         if fields:
             extracted_rows.append(fields)
     
-    
-    # 7. Pegar el DNI en la hoja "EDITOR" (celda R2)
+    # 7. Pegar los datos personales en las hojas correspondientes
     try:
         editor_sheet = doc.getSheets().getByName("EDITOR")
-        rango_editor = editor_sheet.getCellRangeByName("R2")
-        rango_editor.setString(dni if dni else "DNI no encontrado")
+        # DNI en R2
+        editor_sheet.getCellRangeByName("R2").setString(dni if dni else "DNI no encontrado")
+        # Apellido en R4 (solo si se encontró, para no pisar ediciones manuales con vacío)
+        if apellido:
+            editor_sheet.getCellRangeByName("R4").setString(apellido)
+        # Nombre(s) en S4
+        if nombres:
+            editor_sheet.getCellRangeByName("S4").setString(nombres)
     except Exception as e:
         msgbox("Error accediendo a la hoja 'EDITOR':\n" + str(e))
     
-    # 8. Pegar la tabla en la hoja "Extractor" (a partir de la celda A1)
+    # Género en Datos!V4 (celda enlazada al desplegable "el Sr."/"la Srta.")
+    if genero:
+        try:
+            datos_sheet = doc.getSheets().getByName("Datos")
+            datos_sheet.getCellRangeByName("V4").setString(genero)
+        except Exception as e:
+            msgbox("Error accediendo a la hoja 'Datos':\n" + str(e))
+    
+    # 8. Pegar la tabla en la hoja "Extractor"
     try:
         extractor_sheet = doc.getSheets().getByName("Extractor")
         data_array = []
@@ -432,7 +451,7 @@ def ExtraerDatos(*args):
         
         if data_array:
             num_rows = len(data_array)
-            num_cols = 7  # Columnas A a G
+            num_cols = 7
             cell_range = extractor_sheet.getCellRangeByPosition(0, 0, num_cols - 1, num_rows - 1)
             data_tuple = tuple(tuple(row) for row in data_array)
             cell_range.setDataArray(data_tuple)
