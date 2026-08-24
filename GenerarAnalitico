@@ -29,7 +29,7 @@ from xml.sax.saxutils import escape
 ANCHO_UTIL_CM = "16.75cm"
 
 FUENTE = "AvantGarde Bk BT"
-CUERPO_TABLA_PT = "7pt"
+CUERPO_TABLA_PT = "9pt"
 
 # Celdas del .ods de donde sale cada cosa
 CELDAS = {
@@ -42,6 +42,7 @@ CELDAS = {
     "apellido":     ("EDITOR", "R4"),
     "nombres":      ("EDITOR", "S4"),
     "dni":          ("EDITOR", "R2"),
+    "carrera":      ("Datos", "AZ3"),
 }
 
 PRIMERA_FILA_DATOS = 11      # Datos!A11
@@ -178,16 +179,17 @@ def leer_todo(datos):
     filas = []
     vacias_seguidas = 0
     for f in range(PRIMERA_FILA_DATOS - 1, ULTIMA_FILA_DATOS):
-        crudas = [datos.celda_xy("Datos", c, f) for c in range(6)]
+        crudas = [(datos.celda_xy("Datos", c, f) or "").strip() for c in range(6)]
         celdas = [_limpiar(x) for x in crudas]
-        if any(_ES_ERROR.search(x or "") for x in crudas):
+        if any(_ES_ERROR.search(x) for x in crudas):
             avisos.append(f - PRIMERA_FILA_DATOS + 2)
-        if not any(celdas):
+        if not any(crudas):
             vacias_seguidas += 1
             if vacias_seguidas >= 10:
                 break
             continue
         vacias_seguidas = 0
+        celdas.append(crudas)          # índice 6 = valores sin limpiar
         filas.append(celdas)
     d["filas"] = filas
     d["avisos"] = avisos
@@ -211,7 +213,17 @@ def _celda(estilo_celda, estilo_parrafo, texto, span=0):
     return xml
 
 
+FALTA_NOMBRE = "!!COMPLETAR NOMBRE DE LA ACTIVIDAD!!"
+
+
 def es_electiva(fila):
+    """Electiva = la hoja no le pone numeración (columna A vacía), o el nombre
+    ya viene con el prefijo. Se mira el valor CRUDO de A: si la fórmula de la
+    numeración está rota, el valor limpio quedaría vacío y confundiría la
+    detección."""
+    crudas = fila[6] if len(fila) > 6 else fila
+    if crudas[0] == "":
+        return True
     return fila[1].upper().startswith("ACTIVIDAD ELECTIVA")
 
 
@@ -222,11 +234,13 @@ def es_equivalencia(fila):
 def armar_filas(filas):
     salida = []
     for f in filas:
-        a, b, c, dd, e, ff = f
+        a, b, c, dd, e, ff = f[:6]
         celdas = []
         if es_electiva(f):
-            # Nombre de la actividad ocupando las dos primeras columnas
-            celdas.append(_celda("Tabla1.A2", "AFIzq", b, span=2))
+            # Nombre de la actividad ocupando las dos primeras columnas.
+            # Si el nombre no llegó (fórmula rota en el .ods), se deja un
+            # cartel bien visible en vez de una celda vacía.
+            celdas.append(_celda("Tabla1.A2", "AFIzq", b or FALTA_NOMBRE, span=2))
         else:
             celdas.append(_celda("Tabla1.A2", "AFCentro", a))
             celdas.append(_celda("Tabla1.B2", "AFIzq", b))
@@ -321,14 +335,113 @@ def nombre_archivo(d):
         d["apellido"].upper(), d["nombres"].upper(), dni)
 
 
+def nombre_carpeta(d):
+    """Carpeta por alumno, con el mismo formato que usaba la macro vieja:
+    'APELLIDO, NOMBRES - 45458789'"""
+    dni = re.sub(r"\D", "", d["dni"])
+    return "%s, %s - %s" % (d["apellido"].upper(), d["nombres"].upper(), dni)
+
+
+def linea_listado(d):
+    """Renglón que se agrega a la hoja 'Listado' para el correo."""
+    dni = re.sub(r"\D", "", d["dni"])
+    return "- %s, %s - %s" % (d["apellido"].upper(), d["nombres"].upper(), dni)
+
+
+# ---------------------------------------------------------------------------
+# HOJA "LISTADO"
+# ---------------------------------------------------------------------------
+
+PRIMERA_FILA_LISTADO = 3   # índice 3 = fila 4 de Calc (debajo de "Adjunto...")
+
+
+def _ultima_fila_listado(hoja):
+    """Última fila con texto en la columna A (índice; -1 si está vacía)."""
+    ultima = -1
+    for f in range(0, 2000):
+        if hoja.getCellByPosition(0, f).getString().strip():
+            ultima = f
+        elif f - ultima > 30:
+            break
+    return ultima
+
+
+def _copiar_formato(hoja, fila_origen, fila_destino):
+    try:
+        o = hoja.getCellByPosition(0, fila_origen)
+        de = hoja.getCellByPosition(0, fila_destino)
+        de.CharFontName = o.CharFontName
+        de.CharHeight = o.CharHeight
+        de.CharWeight = o.CharWeight
+        de.HoriJustify = o.HoriJustify
+    except Exception:
+        pass
+
+
+def actualizar_listado(doc, d):
+    """Agrega el alumno al 'Listado', agrupado por carrera.
+
+    Devuelve un texto para mostrar en el cartel final.
+    """
+    entrada = linea_listado(d)
+    carrera = (d.get("carrera") or "").strip().upper()
+    encabezado = (carrera + ":") if carrera else ":"
+
+    hoja = doc.getSheets().getByName("Listado")
+    ultima = _ultima_fila_listado(hoja)
+
+    # ¿ya estaba cargado?
+    for f in range(PRIMERA_FILA_LISTADO, ultima + 1):
+        if hoja.getCellByPosition(0, f).getString().strip() == entrada:
+            return "Ya figuraba en el Listado, no lo repetí."
+
+    # Buscar el último encabezado de sección ("CARRERA:")
+    fila_seccion, texto_seccion = None, None
+    for f in range(PRIMERA_FILA_LISTADO, ultima + 1):
+        t = hoja.getCellByPosition(0, f).getString().strip()
+        if t and not t.startswith("-"):
+            fila_seccion, texto_seccion = f, t
+
+    if ultima < PRIMERA_FILA_LISTADO:
+        # La lista está vacía: encabezado + primer alumno
+        hoja.getCellByPosition(0, PRIMERA_FILA_LISTADO).setString(encabezado)
+        hoja.getCellByPosition(0, PRIMERA_FILA_LISTADO + 1).setString(entrada)
+        return "Agregado al Listado, sección nueva '%s'." % encabezado
+
+    if texto_seccion in (None, "", ":"):
+        # Había un encabezado vacío (el bug de la macro vieja): lo completo
+        if fila_seccion is not None:
+            hoja.getCellByPosition(0, fila_seccion).setString(encabezado)
+        hoja.getCellByPosition(0, ultima + 1).setString(entrada)
+        _copiar_formato(hoja, ultima, ultima + 1)
+        return "Agregado al Listado (completé el encabezado '%s')." % encabezado
+
+    if texto_seccion == encabezado:
+        # Misma carrera: va al final de la sección actual
+        hoja.getCellByPosition(0, ultima + 1).setString(entrada)
+        _copiar_formato(hoja, ultima, ultima + 1)
+        return "Agregado al Listado, bajo '%s'." % encabezado
+
+    # Carrera distinta: renglón en blanco + encabezado nuevo + alumno
+    hoja.getCellByPosition(0, ultima + 2).setString(encabezado)
+    hoja.getCellByPosition(0, ultima + 3).setString(entrada)
+    _copiar_formato(hoja, fila_seccion, ultima + 2)
+    _copiar_formato(hoja, ultima, ultima + 3)
+    return "Agregado al Listado, sección nueva '%s'." % encabezado
+
+
 # ---------------------------------------------------------------------------
 # PUNTOS DE ENTRADA
 # ---------------------------------------------------------------------------
 
 def generar_desde_archivo(ruta_ods, modelo_odt, carpeta_salida):
+    """Modo terminal (para probar). No toca la hoja 'Listado'."""
     datos = DatosCalc.desde_archivo(ruta_ods)
     d = leer_todo(datos)
-    destino = os.path.join(carpeta_salida, nombre_archivo(d))
+    carpeta = os.path.join(carpeta_salida, nombre_carpeta(d))
+    if not os.path.isdir(carpeta):
+        os.makedirs(carpeta)
+    destino = os.path.join(carpeta, nombre_archivo(d))
     generar_odt(modelo_odt, destino, d)
     return destino, d
 
@@ -352,17 +465,29 @@ def _primera_que_exista(rutas, es_carpeta=False):
     return None
 
 
-def GenerarAnalitico(*args):
-    """Punto de entrada para el botón dentro del .ods (LibreOffice)."""
-    import uno  # noqa: F401
+def _msgbox(texto, titulo="Generador de analíticos", tipo="INFOBOX"):
+    import uno
+    ctx = uno.getComponentContext()
+    tk = ctx.ServiceManager.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+    return tk.createMessageBox(
+        None, uno.Enum("com.sun.star.awt.MessageBoxType", tipo),
+        1, titulo, texto).execute()
 
-    def msgbox(texto, titulo="Generador de analíticos"):
-        ctx = uno.getComponentContext()
-        tk = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.awt.Toolkit", ctx)
-        tk.createMessageBox(
-            None, uno.Enum("com.sun.star.awt.MessageBoxType", "INFOBOX"),
-            1, titulo, texto).execute()
+
+def _preguntar(texto, titulo="Generador de analíticos"):
+    """Cartel Sí/No. Devuelve True si el usuario elige Sí."""
+    import uno
+    ctx = uno.getComponentContext()
+    tk = ctx.ServiceManager.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+    caja = tk.createMessageBox(
+        None, uno.Enum("com.sun.star.awt.MessageBoxType", "QUERYBOX"),
+        2, titulo, texto)   # 2 = botones Sí / No
+    return caja.execute() == 2   # 2 = Sí
+
+
+def GenerarAnalitico(*args):
+    """Botón principal: genera el .odt en su carpeta y actualiza el Listado."""
+    import uno
 
     ctx = uno.getComponentContext()
     desktop = ctx.ServiceManager.createInstanceWithContext(
@@ -370,30 +495,40 @@ def GenerarAnalitico(*args):
     doc = desktop.getCurrentComponent()
 
     modelo = _primera_que_exista(MODELOS_POSIBLES)
-    carpeta = _primera_que_exista(SALIDAS_POSIBLES, es_carpeta=True)
+    base = _primera_que_exista(SALIDAS_POSIBLES, es_carpeta=True)
     if not modelo:
-        msgbox("No encontré el modelo .odt. Revisá MODELOS_POSIBLES en el script.")
+        _msgbox("No encontré el modelo .odt. Revisá MODELOS_POSIBLES en el script.")
         return
-    if not carpeta:
-        msgbox("No encontré la carpeta de salida. Revisá SALIDAS_POSIBLES en el script.")
+    if not base:
+        _msgbox("No encontré la carpeta de salida. Revisá SALIDAS_POSIBLES en el script.")
         return
 
     try:
         d = leer_todo(DatosCalc.desde_uno(doc))
     except Exception as e:
-        msgbox("Error leyendo el .ods:\n%s" % e)
+        _msgbox("Error leyendo el .ods:\n%s" % e)
         return
 
     if not d["filas"]:
-        msgbox("No hay materias cargadas en Datos!A11 en adelante.")
+        _msgbox("No hay materias cargadas en Datos!A11 en adelante.")
         return
 
+    # Carpeta propia del alumno, adentro de "Para enviar"
+    carpeta = os.path.join(base, nombre_carpeta(d))
     destino = os.path.join(carpeta, nombre_archivo(d))
     try:
+        if not os.path.isdir(carpeta):
+            os.makedirs(carpeta)
         generar_odt(modelo, destino, d)
     except Exception as e:
-        msgbox("Error generando el .odt:\n%s" % e)
+        _msgbox("Error generando el .odt:\n%s" % e)
         return
+
+    # Listado para el correo
+    try:
+        nota_listado = actualizar_listado(doc, d)
+    except Exception as e:
+        nota_listado = "No pude actualizar el Listado: %s" % e
 
     aviso = ""
     if d["avisos"]:
@@ -401,22 +536,58 @@ def GenerarAnalitico(*args):
                  "en el .ods y salieron vacías:\n" +
                  ", ".join(str(x) for x in d["avisos"]))
 
-    msgbox("Analítico generado con %d materias.\n\n%s%s"
-           % (len(d["filas"]), destino, aviso))
+    _msgbox("Analítico generado con %d materias.\n\n%s\n\n%s\n"
+            "(Acordate de guardar el .ods para conservar el Listado.)%s"
+            % (len(d["filas"]), destino, nota_listado, aviso))
 
-    # Abrirlo para revisarlo
-    url = uno.systemPathToFileUrl(destino)
-    desktop.loadComponentFromURL(url, "_blank", 0, ())
+    desktop.loadComponentFromURL(uno.systemPathToFileUrl(destino), "_blank", 0, ())
 
 
-g_exportedScripts = (GenerarAnalitico,)
+def LimpiarListado(*args):
+    """Botón de la hoja 'Listado': borra los nombres para arrancar el próximo correo."""
+    import uno
+
+    ctx = uno.getComponentContext()
+    desktop = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.Desktop", ctx)
+    doc = desktop.getCurrentComponent()
+
+    try:
+        hoja = doc.getSheets().getByName("Listado")
+    except Exception as e:
+        _msgbox("No encontré la hoja 'Listado':\n%s" % e)
+        return
+
+    ultima = _ultima_fila_listado(hoja)
+    if ultima < PRIMERA_FILA_LISTADO:
+        _msgbox("El Listado ya está vacío.")
+        return
+
+    cantidad = sum(
+        1 for f in range(PRIMERA_FILA_LISTADO, ultima + 1)
+        if hoja.getCellByPosition(0, f).getString().strip().startswith("-"))
+
+    if not _preguntar("Se van a borrar %d analíticos del Listado.\n"
+                      "Las dos primeras líneas del correo quedan intactas.\n\n"
+                      "¿Confirmás?" % cantidad):
+        return
+
+    # 1=valor, 2=fecha/hora, 4=texto, 16=fórmula
+    rango = hoja.getCellRangeByPosition(0, PRIMERA_FILA_LISTADO, 5, ultima)
+    rango.clearContents(1 + 2 + 4 + 16)
+
+    _msgbox("Listado limpio. Se borraron %d analíticos." % cantidad)
+
+
+g_exportedScripts = (GenerarAnalitico, LimpiarListado)
 
 
 if __name__ == "__main__":
     import sys
-    ods, modelo, carpeta = sys.argv[1], sys.argv[2], sys.argv[3]
-    ruta, d = generar_desde_archivo(ods, modelo, carpeta)
-    print("Filas generadas:", len(d["filas"]))
-    if d["avisos"]:
-        print("OJO - filas con error de formula en el .ods (numero de fila de la tabla):", d["avisos"])
-    print("Archivo:", ruta)
+    _ruta, _d = generar_desde_archivo(sys.argv[1], sys.argv[2], sys.argv[3])
+    print("Filas generadas:", len(_d["filas"]))
+    if _d["avisos"]:
+        print("OJO - filas con error de fórmula:", _d["avisos"])
+    print("Carrera:", _d.get("carrera"))
+    print("Línea del Listado:", linea_listado(_d))
+    print("Archivo:", _ruta)
