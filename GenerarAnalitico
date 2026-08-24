@@ -1,0 +1,422 @@
+# -*- coding: utf-8 -*-
+"""
+Generador de Analíticos Finales en formato .odt
+================================================
+Toma el modelo 'Analitico Final - 00MODELO2026.odt' y lo completa con los datos
+del generador (.ods), escribiendo el .odt final listo para imprimir.
+
+No usa portapapeles ni PasteSpecial: arma el XML del documento directamente,
+por lo que el resultado es siempre idéntico y no depende de tiempos ni del foco
+de las ventanas.
+
+Se puede usar de dos formas:
+  1) Desde LibreOffice (botón en el .ods)  -> usa el documento abierto (UNO).
+  2) Desde la terminal                     -> lee el archivo .ods guardado.
+"""
+
+import os
+import re
+import shutil
+import zipfile
+from xml.sax.saxutils import escape
+
+# ---------------------------------------------------------------------------
+# CONFIGURACIÓN
+# ---------------------------------------------------------------------------
+
+# Ancho útil del renglón para los guiones de relleno (ancho de página menos
+# márgenes menos la sangría izquierda del párrafo). 21 - 2 - 2 - 0.25 = 16.75
+ANCHO_UTIL_CM = "16.75cm"
+
+FUENTE = "AvantGarde Bk BT"
+CUERPO_TABLA_PT = "7pt"
+
+# Celdas del .ods de donde sale cada cosa
+CELDAS = {
+    "parrafo":      ("SRF ANALITICO", "A10"),
+    "fecha_egreso": ("SRF ANALITICO", "A15"),
+    "promedio":     ("SRF ANALITICO", "A16"),
+    "escala":       ("SRF ANALITICO", "A17"),
+    "cierre_1":     ("SRF ANALITICO", "A18"),
+    "cierre_2":     ("SRF ANALITICO", "A19"),
+    "apellido":     ("EDITOR", "R4"),
+    "nombres":      ("EDITOR", "S4"),
+    "dni":          ("EDITOR", "R2"),
+}
+
+PRIMERA_FILA_DATOS = 11      # Datos!A11
+ULTIMA_FILA_DATOS = 330      # tope de búsqueda
+
+# ---------------------------------------------------------------------------
+# ESTILOS NUEVOS QUE SE INYECTAN EN EL DOCUMENTO
+# ---------------------------------------------------------------------------
+
+ESTILOS_NUEVOS = f'''
+<style:style style:name="AFCentro" style:family="paragraph" style:parent-style-name="Table_20_Contents">
+ <style:paragraph-properties fo:margin-left="0cm" fo:margin-right="0cm" fo:text-align="center" style:justify-single-word="false" fo:text-indent="0cm" style:auto-text-indent="false"/>
+ <style:text-properties fo:color="#000000" style:font-name="{FUENTE}" fo:font-size="{CUERPO_TABLA_PT}"/>
+</style:style>
+<style:style style:name="AFIzq" style:family="paragraph" style:parent-style-name="Table_20_Contents">
+ <style:paragraph-properties fo:margin-left="0cm" fo:margin-right="0cm" fo:text-align="start" style:justify-single-word="false" fo:text-indent="0cm" style:auto-text-indent="false"/>
+ <style:text-properties fo:color="#000000" style:font-name="{FUENTE}" fo:font-size="{CUERPO_TABLA_PT}"/>
+</style:style>
+<style:style style:name="AFPie" style:family="paragraph" style:parent-style-name="Standard">
+ <style:paragraph-properties fo:margin-left="0.25cm" fo:margin-right="0cm" fo:text-align="start" fo:text-indent="0cm" style:auto-text-indent="false">
+  <style:tab-stops>
+   <style:tab-stop style:position="{ANCHO_UTIL_CM}" style:type="right" style:leader-style="solid" style:leader-text="-"/>
+  </style:tab-stops>
+ </style:paragraph-properties>
+ <style:text-properties style:font-name="{FUENTE}" fo:font-size="10pt"/>
+</style:style>
+'''
+
+# ---------------------------------------------------------------------------
+# LECTURA DE DATOS
+# ---------------------------------------------------------------------------
+
+
+def _col_a_indice(letras):
+    n = 0
+    for ch in letras.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return n - 1
+
+
+def _partir_ref(ref):
+    m = re.match(r"([A-Za-z]+)(\d+)", ref)
+    return _col_a_indice(m.group(1)), int(m.group(2)) - 1
+
+
+class DatosCalc:
+    """Acceso uniforme a las celdas, venga de UNO o de un archivo .ods."""
+
+    def __init__(self, origen):
+        self.origen = origen
+
+    # -- desde LibreOffice abierto -----------------------------------------
+    @classmethod
+    def desde_uno(cls, doc):
+        obj = cls("uno")
+        obj.doc = doc
+        return obj
+
+    # -- desde el archivo guardado -----------------------------------------
+    @classmethod
+    def desde_archivo(cls, ruta_ods):
+        from xml.etree import ElementTree as ET
+        NS = {
+            "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
+            "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+            "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+        }
+
+        def q(t):
+            p, l = t.split(":")
+            return "{%s}%s" % (NS[p], l)
+
+        obj = cls("archivo")
+        obj.hojas = {}
+        with zipfile.ZipFile(ruta_ods) as z:
+            root = ET.fromstring(z.read("content.xml"))
+        cuerpo = root.find(q("office:body")).find(q("office:spreadsheet"))
+        for t in cuerpo.findall(q("table:table")):
+            nombre = t.get(q("table:name"))
+            grilla = []
+            for r in t.findall(q("table:table-row")):
+                rep = int(r.get(q("table:number-rows-repeated")) or 1)
+                fila = []
+                for c in list(r):
+                    if c.tag not in (q("table:table-cell"), q("table:covered-table-cell")):
+                        continue
+                    crep = int(c.get(q("table:number-columns-repeated")) or 1)
+                    txt = "\n".join("".join(p.itertext()) for p in c.iter(q("text:p")))
+                    if len(fila) + crep > 120:
+                        crep = max(0, 120 - len(fila))
+                    fila.extend([txt] * crep)
+                    if len(fila) >= 120:
+                        break
+                if rep > 400:
+                    rep = 1
+                for _ in range(rep):
+                    grilla.append(list(fila))
+                    if len(grilla) >= 400:
+                        break
+                if len(grilla) >= 400:
+                    break
+            obj.hojas[nombre] = grilla
+        return obj
+
+    # ----------------------------------------------------------------------
+    def celda(self, hoja, ref):
+        col, fil = _partir_ref(ref)
+        return self.celda_xy(hoja, col, fil)
+
+    def celda_xy(self, hoja, col, fil):
+        if self.origen == "uno":
+            return self.doc.getSheets().getByName(hoja).getCellByPosition(col, fil).getString()
+        grilla = self.hojas.get(hoja, [])
+        if fil >= len(grilla):
+            return ""
+        fila = grilla[fil]
+        return fila[col] if col < len(fila) else ""
+
+
+_ES_ERROR = re.compile(r"#[A-ZÁ¡!/ºN]|Err:\d+|#N/D|#VALUE|#REF|#DIV", re.IGNORECASE)
+
+
+def _limpiar(texto):
+    """Deja vacías las celdas con error de fórmula (#¡VALOR!, #N/D, Err:xxx)."""
+    t = (texto or "").strip()
+    return "" if _ES_ERROR.search(t) else t
+
+
+def leer_todo(datos):
+    """Devuelve un dict con los textos y la lista de filas de la tabla."""
+    d = {k: _limpiar(datos.celda(h, r)) for k, (h, r) in CELDAS.items()}
+    avisos = []
+
+    filas = []
+    vacias_seguidas = 0
+    for f in range(PRIMERA_FILA_DATOS - 1, ULTIMA_FILA_DATOS):
+        crudas = [datos.celda_xy("Datos", c, f) for c in range(6)]
+        celdas = [_limpiar(x) for x in crudas]
+        if any(_ES_ERROR.search(x or "") for x in crudas):
+            avisos.append(f - PRIMERA_FILA_DATOS + 2)
+        if not any(celdas):
+            vacias_seguidas += 1
+            if vacias_seguidas >= 10:
+                break
+            continue
+        vacias_seguidas = 0
+        filas.append(celdas)
+    d["filas"] = filas
+    d["avisos"] = avisos
+    return d
+
+
+# ---------------------------------------------------------------------------
+# ARMADO DE LA TABLA
+# ---------------------------------------------------------------------------
+
+def _p(estilo, texto):
+    return '<text:p text:style-name="%s">%s</text:p>' % (estilo, escape(texto))
+
+
+def _celda(estilo_celda, estilo_parrafo, texto, span=0):
+    at = ' table:number-columns-spanned="%d"' % span if span else ""
+    xml = '<table:table-cell table:style-name="%s"%s office:value-type="string">%s</table:table-cell>' % (
+        estilo_celda, at, _p(estilo_parrafo, texto))
+    if span:
+        xml += "<table:covered-table-cell/>" * (span - 1)
+    return xml
+
+
+def es_electiva(fila):
+    return fila[1].upper().startswith("ACTIVIDAD ELECTIVA")
+
+
+def es_equivalencia(fila):
+    return fila[3].upper().startswith("APROBADO POR RESOLUCION")
+
+
+def armar_filas(filas):
+    salida = []
+    for f in filas:
+        a, b, c, dd, e, ff = f
+        celdas = []
+        if es_electiva(f):
+            # Nombre de la actividad ocupando las dos primeras columnas
+            celdas.append(_celda("Tabla1.A2", "AFIzq", b, span=2))
+        else:
+            celdas.append(_celda("Tabla1.A2", "AFCentro", a))
+            celdas.append(_celda("Tabla1.B2", "AFIzq", b))
+
+        celdas.append(_celda("Tabla1.C2", "AFCentro", c))
+
+        if es_equivalencia(f):
+            # La resolución ocupa CALIFICACIÓN + LIBRO + FOLIO
+            celdas.append(_celda("Tabla1.F2", "AFCentro", dd, span=3))
+        else:
+            celdas.append(_celda("Tabla1.D2", "AFCentro", dd))
+            celdas.append(_celda("Tabla1.E2", "AFCentro", e))
+            celdas.append(_celda("Tabla1.F2", "AFCentro", ff))
+
+        salida.append('<table:table-row table:style-name="Tabla1.1">%s</table:table-row>'
+                      % "".join(celdas))
+    return "".join(salida)
+
+
+# ---------------------------------------------------------------------------
+# GENERACIÓN DEL .ODT
+# ---------------------------------------------------------------------------
+
+def _sin_guiones(texto):
+    """Saca los guiones de relleno del final (los pone Writer con el tabulador)."""
+    return re.sub(r"[-\s]*$", "", texto).rstrip(".")
+
+
+def _parrafo_pie(texto):
+    return '<text:p text:style-name="AFPie">%s.<text:tab/></text:p>' % escape(texto)
+
+
+def generar_odt(modelo_odt, salida_odt, d):
+    with zipfile.ZipFile(modelo_odt) as z:
+        nombres = z.namelist()
+        contenidos = {n: z.read(n) for n in nombres}
+
+    xml = contenidos["content.xml"].decode("utf-8")
+
+    # 1) estilos nuevos
+    xml = xml.replace("</office:automatic-styles>",
+                      ESTILOS_NUEVOS + "</office:automatic-styles>")
+
+    # 2) párrafo de CERTIFICO
+    xml = re.sub(r'<text:p text:style-name="P12">.*?</text:p>',
+                 '<text:p text:style-name="P12">%s</text:p>' % escape(d["parrafo"]),
+                 xml, count=1, flags=re.DOTALL)
+
+    # 3) tabla: cabecera del modelo + filas generadas
+    m = re.search(r'(<table:table\b[^>]*table:name="Tabla1"[^>]*>)(.*?)(</table:table>)',
+                  xml, re.DOTALL)
+    cuerpo = m.group(2)
+    columnas = "".join(re.findall(r'<table:table-column\b[^>]*/>', cuerpo))
+    fila_cabecera = re.search(r'<table:table-row\b.*?</table:table-row>', cuerpo, re.DOTALL).group(0)
+
+    tabla = (m.group(1) + columnas
+             + "<table:table-header-rows>" + fila_cabecera + "</table:table-header-rows>"
+             + armar_filas(d["filas"])
+             + m.group(3))
+    xml = xml[:m.start()] + tabla + xml[m.end():]
+
+    # 4) pie del documento
+    cierre = (d["cierre_1"].rstrip() + " " + d["cierre_2"].lstrip()).strip()
+    pie = "".join([
+        _parrafo_pie(_sin_guiones(d["fecha_egreso"])),
+        _parrafo_pie(_sin_guiones(d["promedio"])),
+        _parrafo_pie(_sin_guiones(d["escala"])),
+        _parrafo_pie(_sin_guiones(cierre)),
+    ])
+    xml = re.sub(r'(</table:table>)(.*?)(</office:text>)',
+                 lambda mm: mm.group(1) + '<text:p text:style-name="P8"/>' + pie + mm.group(3),
+                 xml, count=1, flags=re.DOTALL)
+
+    contenidos["content.xml"] = xml.encode("utf-8")
+
+    with zipfile.ZipFile(salida_odt, "w", zipfile.ZIP_DEFLATED) as z:
+        # mimetype va primero y sin comprimir
+        z.writestr(zipfile.ZipInfo("mimetype"), contenidos["mimetype"],
+                   compress_type=zipfile.ZIP_STORED)
+        for n in nombres:
+            if n == "mimetype":
+                continue
+            z.writestr(n, contenidos[n])
+    return salida_odt
+
+
+def nombre_archivo(d):
+    dni = re.sub(r"\D", "", d["dni"])
+    if len(dni) >= 7:
+        dni = "{}.{}.{}".format(dni[:-6], dni[-6:-3], dni[-3:])
+    return "Analitico Final - %s, %s (DNI N°%s).odt" % (
+        d["apellido"].upper(), d["nombres"].upper(), dni)
+
+
+# ---------------------------------------------------------------------------
+# PUNTOS DE ENTRADA
+# ---------------------------------------------------------------------------
+
+def generar_desde_archivo(ruta_ods, modelo_odt, carpeta_salida):
+    datos = DatosCalc.desde_archivo(ruta_ods)
+    d = leer_todo(datos)
+    destino = os.path.join(carpeta_salida, nombre_archivo(d))
+    generar_odt(modelo_odt, destino, d)
+    return destino, d
+
+
+# --- Rutas candidatas (igual que en ExtraerDatos.py) ------------------------
+
+MODELOS_POSIBLES = [
+    r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo\Analitico Final - 00MODELO2026.odt",
+    "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo/Analitico Final - 00MODELO2026.odt",
+]
+SALIDAS_POSIBLES = [
+    r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo\Para enviar",
+    "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo/Para enviar",
+]
+
+
+def _primera_que_exista(rutas, es_carpeta=False):
+    for r in rutas:
+        if (os.path.isdir(r) if es_carpeta else os.path.isfile(r)):
+            return r
+    return None
+
+
+def GenerarAnalitico(*args):
+    """Punto de entrada para el botón dentro del .ods (LibreOffice)."""
+    import uno  # noqa: F401
+
+    def msgbox(texto, titulo="Generador de analíticos"):
+        ctx = uno.getComponentContext()
+        tk = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", ctx)
+        tk.createMessageBox(
+            None, uno.Enum("com.sun.star.awt.MessageBoxType", "INFOBOX"),
+            1, titulo, texto).execute()
+
+    ctx = uno.getComponentContext()
+    desktop = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.Desktop", ctx)
+    doc = desktop.getCurrentComponent()
+
+    modelo = _primera_que_exista(MODELOS_POSIBLES)
+    carpeta = _primera_que_exista(SALIDAS_POSIBLES, es_carpeta=True)
+    if not modelo:
+        msgbox("No encontré el modelo .odt. Revisá MODELOS_POSIBLES en el script.")
+        return
+    if not carpeta:
+        msgbox("No encontré la carpeta de salida. Revisá SALIDAS_POSIBLES en el script.")
+        return
+
+    try:
+        d = leer_todo(DatosCalc.desde_uno(doc))
+    except Exception as e:
+        msgbox("Error leyendo el .ods:\n%s" % e)
+        return
+
+    if not d["filas"]:
+        msgbox("No hay materias cargadas en Datos!A11 en adelante.")
+        return
+
+    destino = os.path.join(carpeta, nombre_archivo(d))
+    try:
+        generar_odt(modelo, destino, d)
+    except Exception as e:
+        msgbox("Error generando el .odt:\n%s" % e)
+        return
+
+    aviso = ""
+    if d["avisos"]:
+        aviso = ("\n\nATENCIÓN: estas filas de la tabla tenían error de fórmula "
+                 "en el .ods y salieron vacías:\n" +
+                 ", ".join(str(x) for x in d["avisos"]))
+
+    msgbox("Analítico generado con %d materias.\n\n%s%s"
+           % (len(d["filas"]), destino, aviso))
+
+    # Abrirlo para revisarlo
+    url = uno.systemPathToFileUrl(destino)
+    desktop.loadComponentFromURL(url, "_blank", 0, ())
+
+
+g_exportedScripts = (GenerarAnalitico,)
+
+
+if __name__ == "__main__":
+    import sys
+    ods, modelo, carpeta = sys.argv[1], sys.argv[2], sys.argv[3]
+    ruta, d = generar_desde_archivo(ods, modelo, carpeta)
+    print("Filas generadas:", len(d["filas"]))
+    if d["avisos"]:
+        print("OJO - filas con error de formula en el .ods (numero de fila de la tabla):", d["avisos"])
+    print("Archivo:", ruta)
