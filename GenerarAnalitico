@@ -162,13 +162,25 @@ class DatosCalc:
         return fila[col] if col < len(fila) else ""
 
 
-_ES_ERROR = re.compile(r"#[A-ZÁ¡!/ºN]|Err:\d+|#N/D|#VALUE|#REF|#DIV", re.IGNORECASE)
+# Valores de error de LibreOffice (español e inglés). Se compara el texto
+# COMPLETO de la celda: así un marcador propio como "#COMPLETAR(1)#" o una
+# resolución con "#" adentro no se confunden con un error de fórmula.
+_ERRORES = {
+    "#¡VALOR!", "#¡DIV/0!", "#¡REF!", "#¿NOMBRE?", "#N/D", "#¡NULO!", "#¡NUM!",
+    "#VALUE!", "#DIV/0!", "#REF!", "#NAME?", "#N/A", "#NULL!", "#NUM!",
+}
+_ERR_NUMERADO = re.compile(r"^Err:\d+$")
+
+
+def _es_error(texto):
+    t = (texto or "").strip()
+    return t in _ERRORES or bool(_ERR_NUMERADO.match(t))
 
 
 def _limpiar(texto):
-    """Deja vacías las celdas con error de fórmula (#¡VALOR!, #N/D, Err:xxx)."""
+    """Deja vacías SOLO las celdas cuyo contenido entero es un error de fórmula."""
     t = (texto or "").strip()
-    return "" if _ES_ERROR.search(t) else t
+    return "" if _es_error(t) else t
 
 
 def leer_todo(datos):
@@ -181,7 +193,7 @@ def leer_todo(datos):
     for f in range(PRIMERA_FILA_DATOS - 1, ULTIMA_FILA_DATOS):
         crudas = [(datos.celda_xy("Datos", c, f) or "").strip() for c in range(6)]
         celdas = [_limpiar(x) for x in crudas]
-        if any(_ES_ERROR.search(x) for x in crudas):
+        if any(_es_error(x) for x in crudas):
             avisos.append(f - PRIMERA_FILA_DATOS + 2)
         if not any(crudas):
             vacias_seguidas += 1
@@ -260,6 +272,46 @@ def armar_filas(filas):
     return "".join(salida)
 
 
+
+# ---------------------------------------------------------------------------
+# CABECERA: "Hoja Nº N - Certificado Analítico APELLIDO, NOMBRES (DNI N°...)"
+# ---------------------------------------------------------------------------
+
+ESTILO_HOJA = """<style:style style:name="AFHoja" style:family="paragraph" style:parent-style-name="Standard">
+ <style:paragraph-properties fo:margin-top="0.15cm" fo:margin-bottom="0cm" fo:text-align="start"/>
+ <style:text-properties style:font-name="{fuente}" fo:font-size="10pt"/>
+</style:style>"""
+
+
+def _parrafo_hoja(alumno):
+    return ('<text:p text:style-name="AFHoja">Hoja N\u00ba '
+            '<text:page-number text:select-page="current">2</text:page-number>'
+            ' - Certificado Anal\u00edtico %s</text:p>' % escape(alumno))
+
+
+def poner_renglon_hoja(styles_xml, alumno):
+    """Agrega el renglón de hoja a la cabecera de página, salvo en la primera.
+
+    Se apoya en <style:header-first>, que es la opción "Mismo contenido en la
+    primera página" de Writer: la primera hoja queda como está y de la segunda
+    en adelante aparece el renglón con el número de hoja y el alumno.
+    """
+    m = re.search(r'<style:header>(.*?)</style:header>', styles_xml, re.DOTALL)
+    if not m:
+        return styles_xml            # el modelo no tiene cabecera: no toco nada
+    cabecera = m.group(1)
+
+    # Primero se reemplaza la cabecera (usando las posiciones ya calculadas)
+    nueva = ("<style:header>" + cabecera + _parrafo_hoja(alumno) + "</style:header>"
+             + "<style:header-first>" + cabecera + "</style:header-first>")
+    styles_xml = styles_xml[:m.start()] + nueva + styles_xml[m.end():]
+
+    # y recién después se agrega el estilo, que va más arriba en el archivo
+    return styles_xml.replace(
+        "</office:automatic-styles>",
+        ESTILO_HOJA.format(fuente=FUENTE) + "</office:automatic-styles>", 1)
+
+
 # ---------------------------------------------------------------------------
 # GENERACIÓN DEL .ODT
 # ---------------------------------------------------------------------------
@@ -316,6 +368,12 @@ def generar_odt(modelo_odt, salida_odt, d):
 
     contenidos["content.xml"] = xml.encode("utf-8")
 
+    # Renglón de hoja en la cabecera, de la página 2 en adelante
+    alumno = "%s, %s (DNI N°%s)" % (d["apellido"].upper(), d["nombres"].upper(),
+                                    _dni_con_puntos(d["dni"]))
+    contenidos["styles.xml"] = poner_renglon_hoja(
+        contenidos["styles.xml"].decode("utf-8"), alumno).encode("utf-8")
+
     with zipfile.ZipFile(salida_odt, "w", zipfile.ZIP_DEFLATED) as z:
         # mimetype va primero y sin comprimir
         z.writestr(zipfile.ZipInfo("mimetype"), contenidos["mimetype"],
@@ -327,12 +385,14 @@ def generar_odt(modelo_odt, salida_odt, d):
     return salida_odt
 
 
+def _dni_con_puntos(dni):
+    dni = re.sub(r"\D", "", dni or "")
+    return "{}.{}.{}".format(dni[:-6], dni[-6:-3], dni[-3:]) if len(dni) >= 7 else dni
+
+
 def nombre_archivo(d):
-    dni = re.sub(r"\D", "", d["dni"])
-    if len(dni) >= 7:
-        dni = "{}.{}.{}".format(dni[:-6], dni[-6:-3], dni[-3:])
     return "Analitico Final - %s, %s (DNI N°%s).odt" % (
-        d["apellido"].upper(), d["nombres"].upper(), dni)
+        d["apellido"].upper(), d["nombres"].upper(), _dni_con_puntos(d["dni"]))
 
 
 def nombre_carpeta(d):
@@ -448,10 +508,14 @@ def generar_desde_archivo(ruta_ods, modelo_odt, carpeta_salida):
 
 # --- Rutas candidatas (igual que en ExtraerDatos.py) ------------------------
 
-MODELOS_POSIBLES = [
-    r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo\Analitico Final - 00MODELO2026.odt",
-    "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo/Analitico Final - 00MODELO2026.odt",
+# Carpetas donde buscar el modelo. Se usa el "Analitico Final - 00MODELO<año>.odt"
+# del año más alto que haya: el año que viene alcanza con dejar ahí el
+# 00MODELO2027.odt y el script lo toma solo, sin tocar nada.
+CARPETAS_MODELO = [
+    r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo",
+    "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo",
 ]
+PATRON_MODELO = re.compile(r"^Analitico Final - 00MODELO(\d{4})\.odt$", re.IGNORECASE)
 SALIDAS_POSIBLES = [
     r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo\Para enviar",
     "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo/Para enviar",
@@ -463,6 +527,19 @@ def _primera_que_exista(rutas, es_carpeta=False):
         if (os.path.isdir(r) if es_carpeta else os.path.isfile(r)):
             return r
     return None
+
+
+def buscar_modelo():
+    """Devuelve el modelo del año más nuevo que encuentre en CARPETAS_MODELO."""
+    encontrados = []
+    for carpeta in CARPETAS_MODELO:
+        if not os.path.isdir(carpeta):
+            continue
+        for nombre in os.listdir(carpeta):
+            m = PATRON_MODELO.match(nombre)
+            if m:
+                encontrados.append((int(m.group(1)), os.path.join(carpeta, nombre)))
+    return max(encontrados)[1] if encontrados else None
 
 
 def _msgbox(texto, titulo="Generador de analíticos", tipo="INFOBOX"):
@@ -494,10 +571,12 @@ def GenerarAnalitico(*args):
         "com.sun.star.frame.Desktop", ctx)
     doc = desktop.getCurrentComponent()
 
-    modelo = _primera_que_exista(MODELOS_POSIBLES)
+    modelo = buscar_modelo()
     base = _primera_que_exista(SALIDAS_POSIBLES, es_carpeta=True)
     if not modelo:
-        _msgbox("No encontré el modelo .odt. Revisá MODELOS_POSIBLES en el script.")
+        _msgbox("No encontré ningún archivo "
+                '"Analitico Final - 00MODELO<año>.odt".\n'
+                "Revisá CARPETAS_MODELO en el script.")
         return
     if not base:
         _msgbox("No encontré la carpeta de salida. Revisá SALIDAS_POSIBLES en el script.")
