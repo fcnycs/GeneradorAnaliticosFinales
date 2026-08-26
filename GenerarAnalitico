@@ -774,33 +774,15 @@ def LimpiarListado(*args):
     _msgbox("Correo vacío. Se borraron %d analíticos." % cantidad)
 
 
-class _TextoParaPortapapeles(object):
-    """Envoltorio mínimo para poder poner texto en el portapapeles del sistema."""
-
-    def __init__(self, texto):
-        import uno
-        from com.sun.star.datatransfer import DataFlavor
-        self.texto = texto
-        self.flavor = DataFlavor()
-        self.flavor.MimeType = "text/plain;charset=utf-16"
-        self.flavor.HumanPresentableName = "Unicode text"
-        self.flavor.DataType = uno.getTypeByName("string")
-
-    def getTransferData(self, flavor):
-        return self.texto
-
-    def getTransferDataFlavors(self):
-        return (self.flavor,)
-
-    def isDataFlavorSupported(self, flavor):
-        return flavor.MimeType == self.flavor.MimeType
-
-
 def CopiarCorreo(*args):
-    """Botón opcional: deja el correo entero en el portapapeles."""
+    """Botón: selecciona el correo en la hoja y lo copia.
+
+    Hace lo mismo que seleccionar la columna A a mano y apretar Ctrl+C, así que
+    lo que se pega en el mail sale igual que cuando lo copiás vos. (Antes esto
+    armaba el texto y lo metía en el portapapeles por la API; el texto salía en
+    UTF-16 y algunos programas lo pegaban con símbolos raros entre las letras.)
+    """
     import uno
-    import unohelper
-    from com.sun.star.datatransfer import XTransferable
 
     ctx = uno.getComponentContext()
     desktop = ctx.ServiceManager.createInstanceWithContext(
@@ -811,19 +793,28 @@ def CopiarCorreo(*args):
     if hoja is None:
         return
 
-    texto = "\n".join(armar_correo(leer_listado(hoja)))
-
-    class Transferible(unohelper.Base, XTransferable, _TextoParaPortapapeles):
-        pass
+    usadas = len(_texto_columna_a(hoja))
+    if not usadas:
+        _msgbox("La hoja 'Listado' está vacía, no hay nada para copiar.")
+        return
 
     try:
-        clip = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.datatransfer.clipboard.SystemClipboard", ctx)
-        clip.setContents(Transferible(texto), None)
-        _msgbox("Correo copiado al portapapeles.\nPegalo en el mail con Ctrl+V.")
+        ctrl = doc.getCurrentController()
+        ctrl.setActiveSheet(hoja)
+        ctrl.select(hoja.getCellRangeByPosition(0, 0, 0, usadas - 1))
+
+        despachador = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.frame.DispatchHelper", ctx)
+        despachador.executeDispatch(ctrl.getFrame(), ".uno:Copy", "", 0, ())
     except Exception as e:
-        _msgbox("No pude copiar al portapapeles (%s).\n\n"
-                "Podés seleccionar la columna A de la hoja y copiarla a mano." % e)
+        _msgbox("No pude copiar (%s).\n\n"
+                "Seleccioná la columna A de la hoja y copiala con Ctrl+C." % e)
+        return
+
+    secciones = leer_listado(hoja)
+    total = sum(len(a) for _, a in secciones)
+    _msgbox("Correo copiado (%d analítico%s).\nPegalo en el mail con Ctrl+V."
+            % (total, "" if total == 1 else "s"))
 
 
 g_exportedScripts = (GenerarAnalitico, LimpiarListado, CopiarCorreo)
