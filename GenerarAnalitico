@@ -686,9 +686,10 @@ def GenerarAnalitico(*args):
                  "en el .ods y salieron vacías:\n" +
                  ", ".join(str(x) for x in d["avisos"]))
 
-    _msgbox("Analítico generado con %d materias.\n\n%s\n\n%s\n"
+    _msgbox("Analítico generado con %d materias.\n\n%s\n\n"
+            "Modelo usado: %s\n\n%s\n"
             "(Acordate de guardar el .ods para conservar el Listado.)%s"
-            % (len(d["filas"]), destino, nota_listado, aviso))
+            % (len(d["filas"]), destino, modelo, nota_listado, aviso))
 
     desktop.loadComponentFromURL(uno.systemPathToFileUrl(destino), "_blank", 0, ())
 
