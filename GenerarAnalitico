@@ -52,6 +52,8 @@ ULTIMA_FILA_DATOS = 330      # tope de búsqueda
 # ESTILOS NUEVOS QUE SE INYECTAN EN EL DOCUMENTO
 # ---------------------------------------------------------------------------
 
+ESTILOS_TABLA = '''<style:style style:name="AFcelA" style:family="table-cell"><style:table-cell-properties style:vertical-align="middle" fo:padding-left="0.191cm" fo:padding-right="0.191cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:border="0.75pt solid #000000"/></style:style><style:style style:name="AFcelB" style:family="table-cell"><style:table-cell-properties style:vertical-align="middle" fo:padding-left="0.191cm" fo:padding-right="0.191cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:border="0.75pt solid #000000"/></style:style><style:style style:name="AFcelC" style:family="table-cell"><style:table-cell-properties style:vertical-align="middle" fo:padding-left="0.191cm" fo:padding-right="0.191cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:border-left="0.75pt solid #000000" fo:border-right="0.5pt solid #000000" fo:border-top="none" fo:border-bottom="0.75pt solid #000000"/></style:style><style:style style:name="AFcelD" style:family="table-cell"><style:table-cell-properties style:vertical-align="middle" fo:padding-left="0.191cm" fo:padding-right="0.191cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:border-left="0.5pt solid #000000" fo:border-right="none" fo:border-top="none" fo:border-bottom="0.75pt solid #000000"/></style:style><style:style style:name="AFcelE" style:family="table-cell"><style:table-cell-properties style:vertical-align="middle" fo:padding-left="0.191cm" fo:padding-right="0.191cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:border-left="0.5pt solid #000000" fo:border-right="none" fo:border-top="none" fo:border-bottom="0.75pt solid #000000"/></style:style><style:style style:name="AFcelF" style:family="table-cell"><style:table-cell-properties style:vertical-align="middle" fo:padding-left="0.191cm" fo:padding-right="0.191cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:border-left="0.5pt solid #000000" fo:border-right="0.5pt solid #000000" fo:border-top="none" fo:border-bottom="0.75pt solid #000000"/></style:style><style:style style:name="AFfila" style:family="table-row"><style:table-row-properties style:min-row-height="0.316cm" fo:keep-together="always"/></style:style>'''
+
 ESTILOS_NUEVOS = f'''
 <style:style style:name="AFCentro" style:family="paragraph" style:parent-style-name="Table_20_Contents">
  <style:paragraph-properties fo:margin-left="0cm" fo:margin-right="0cm" fo:text-align="center" style:justify-single-word="false" fo:text-indent="0cm" style:auto-text-indent="false"/>
@@ -69,7 +71,7 @@ ESTILOS_NUEVOS = f'''
  </style:paragraph-properties>
  <style:text-properties style:font-name="{FUENTE}" fo:font-size="10pt"/>
 </style:style>
-'''
+''' + ESTILOS_TABLA
 
 # ---------------------------------------------------------------------------
 # LECTURA DE DATOS
@@ -252,22 +254,22 @@ def armar_filas(filas):
             # Nombre de la actividad ocupando las dos primeras columnas.
             # Si el nombre no llegó (fórmula rota en el .ods), se deja un
             # cartel bien visible en vez de una celda vacía.
-            celdas.append(_celda("Tabla1.A2", "AFIzq", b or FALTA_NOMBRE, span=2))
+            celdas.append(_celda("AFcelA", "AFIzq", b or FALTA_NOMBRE, span=2))
         else:
-            celdas.append(_celda("Tabla1.A2", "AFCentro", a))
-            celdas.append(_celda("Tabla1.B2", "AFIzq", b))
+            celdas.append(_celda("AFcelA", "AFCentro", a))
+            celdas.append(_celda("AFcelB", "AFIzq", b))
 
-        celdas.append(_celda("Tabla1.C2", "AFCentro", c))
+        celdas.append(_celda("AFcelC", "AFCentro", c))
 
         if es_equivalencia(f):
             # La resolución ocupa CALIFICACIÓN + LIBRO + FOLIO
-            celdas.append(_celda("Tabla1.F2", "AFCentro", dd, span=3))
+            celdas.append(_celda("AFcelF", "AFCentro", dd, span=3))
         else:
-            celdas.append(_celda("Tabla1.D2", "AFCentro", dd))
-            celdas.append(_celda("Tabla1.E2", "AFCentro", e))
-            celdas.append(_celda("Tabla1.F2", "AFCentro", ff))
+            celdas.append(_celda("AFcelD", "AFCentro", dd))
+            celdas.append(_celda("AFcelE", "AFCentro", e))
+            celdas.append(_celda("AFcelF", "AFCentro", ff))
 
-        salida.append('<table:table-row table:style-name="Tabla1.1">%s</table:table-row>'
+        salida.append('<table:table-row table:style-name="AFfila">%s</table:table-row>'
                       % "".join(celdas))
     return "".join(salida)
 
@@ -325,6 +327,26 @@ def _parrafo_pie(texto):
     return '<text:p text:style-name="AFPie">%s.<text:tab/></text:p>' % escape(texto)
 
 
+def reemplazar_parrafo_certifico(xml, texto):
+    """Cambia el párrafo del modelo que contiene CERTIFICO por el texto real.
+
+    Conserva el estilo de párrafo que tenga el modelo, sea cual sea su nombre.
+    """
+    inicio_tabla = xml.find("<table:table")
+    zona = xml[:inicio_tabla] if inicio_tabla > 0 else xml
+    for m in re.finditer(r'<text:p\b([^>]*)>(.*?)</text:p>', zona, re.DOTALL):
+        plano = re.sub(r"<[^>]+>", "", m.group(2))
+        if "CERTIFICO" in plano.upper():
+            estilo = re.search(r'text:style-name="([^"]+)"', m.group(1))
+            nuevo = '<text:p%s>%s</text:p>' % (
+                ' text:style-name="%s"' % estilo.group(1) if estilo else "",
+                escape(texto))
+            return xml[:m.start()] + nuevo + xml[m.end():]
+    raise RuntimeError(
+        "No encontré en el modelo el párrafo que empieza con CERTIFICO. "
+        "¿Se editó el modelo y se borró ese texto?")
+
+
 def generar_odt(modelo_odt, salida_odt, d):
     with zipfile.ZipFile(modelo_odt) as z:
         nombres = z.namelist()
@@ -336,10 +358,9 @@ def generar_odt(modelo_odt, salida_odt, d):
     xml = xml.replace("</office:automatic-styles>",
                       ESTILOS_NUEVOS + "</office:automatic-styles>")
 
-    # 2) párrafo de CERTIFICO
-    xml = re.sub(r'<text:p text:style-name="P12">.*?</text:p>',
-                 '<text:p text:style-name="P12">%s</text:p>' % escape(d["parrafo"]),
-                 xml, count=1, flags=re.DOTALL)
+    # 2) párrafo de CERTIFICO: se lo ubica por su contenido, porque el nombre
+    #    del estilo cambia si alguien abre y guarda el modelo con LibreOffice.
+    xml = reemplazar_parrafo_certifico(xml, d["parrafo"])
 
     # 3) tabla: cabecera del modelo + filas generadas
     m = re.search(r'(<table:table\b[^>]*table:name="Tabla1"[^>]*>)(.*?)(</table:table>)',
@@ -363,7 +384,7 @@ def generar_odt(modelo_odt, salida_odt, d):
         _parrafo_pie(_sin_guiones(cierre)),
     ])
     xml = re.sub(r'(</table:table>)(.*?)(</office:text>)',
-                 lambda mm: mm.group(1) + '<text:p text:style-name="P8"/>' + pie + mm.group(3),
+                 lambda mm: mm.group(1) + '<text:p text:style-name="AFPie"/>' + pie + mm.group(3),
                  xml, count=1, flags=re.DOTALL)
 
     contenidos["content.xml"] = xml.encode("utf-8")
