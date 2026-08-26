@@ -440,6 +440,7 @@ DESPEDIDA = "Saludos cordiales,"
 # Cuántas filas de la columna A se revisan / limpian
 MAX_FILAS_LISTADO = 500
 
+_RE_SALUDO = re.compile(r"^(hola|buen[oa]s?\s|estimad|adjunto|saludos)", re.IGNORECASE)
 _RE_ENTRADA_NUEVA = re.compile(r"^\d+\s*-\s*(.+)$")
 _RE_ENTRADA_VIEJA = re.compile(r"^-\s*(.+?)\s*-\s*(\d{6,9})$")
 
@@ -464,9 +465,11 @@ def leer_listado(hoja):
     como el que dejó la macro anterior ("- APELLIDO, NOMBRES - 12345678").
     """
     sic = []                       # secciones: lista de [carrera, [alumnos]]
-    for texto in _texto_columna_a(hoja):
+    for fila, texto in enumerate(_texto_columna_a(hoja)):
         if not texto or texto in SALUDO or texto == DESPEDIDA:
             continue
+        if fila < 2 or _RE_SALUDO.match(texto):
+            continue               # encabezado del correo, en cualquier redacción
         m = _RE_ENTRADA_NUEVA.match(texto)
         if m:
             alumno = m.group(1).strip()
@@ -653,10 +656,12 @@ def _preguntar(texto, titulo="Generador de analíticos"):
     import uno
     ctx = uno.getComponentContext()
     tk = ctx.ServiceManager.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+    # Botones: 3 = Sí/No  (el 2 es Aceptar/Cancelar).
+    # Respuestas: 1 = Aceptar, 2 = Sí. Se aceptan las dos por las dudas.
     caja = tk.createMessageBox(
         None, uno.Enum("com.sun.star.awt.MessageBoxType", "QUERYBOX"),
-        2, titulo, texto)   # 2 = botones Sí / No
-    return caja.execute() == 2   # 2 = Sí
+        3, titulo, texto)
+    return caja.execute() in (1, 2)
 
 
 def GenerarAnalitico(*args):
