@@ -515,7 +515,10 @@ CARPETAS_MODELO = [
     r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo",
     "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo",
 ]
-PATRON_MODELO = re.compile(r"^Analitico Final - 00MODELO(\d{4})\.odt$", re.IGNORECASE)
+# Cualquier .odt que tenga "MODELO" en el nombre. Si además tiene un año de 4
+# cifras, se usa para elegir el más nuevo cuando hay varios.
+PATRON_MODELO = re.compile(r"MODELO.*\.odt$", re.IGNORECASE)
+PATRON_ANIO = re.compile(r"(20\d{2})")
 SALIDAS_POSIBLES = [
     r"D:\Documentos Personales\ALUMNOS\Analitico p-titulo\Para enviar",
     "/home/cristian/Documentos/ALUMNOS/Analitico p-titulo/Para enviar",
@@ -529,17 +532,54 @@ def _primera_que_exista(rutas, es_carpeta=False):
     return None
 
 
-def buscar_modelo():
-    """Devuelve el modelo del año más nuevo que encuentre en CARPETAS_MODELO."""
+def carpeta_del_ods(doc):
+    """Carpeta donde está guardado el .ods abierto (o None si nunca se guardó)."""
+    try:
+        import uno
+        url = doc.getURL()
+        if url:
+            return os.path.dirname(uno.fileUrlToSystemPath(url))
+    except Exception:
+        pass
+    return None
+
+
+def carpetas_a_revisar(doc=None):
+    """Dónde buscar el modelo: primero al lado del .ods, después lo configurado.
+
+    Así no hace falta editar rutas en el script: si el modelo está en la misma
+    carpeta que el generador (o en su subcarpeta "Para enviar"), lo encuentra.
+    """
+    carpetas = []
+    base = carpeta_del_ods(doc) if doc is not None else None
+    if base:
+        carpetas += [base, os.path.join(base, "Para enviar"), os.path.dirname(base)]
+    carpetas += CARPETAS_MODELO
+    vistas, salida = set(), []
+    for c in carpetas:
+        if c and c not in vistas and os.path.isdir(c):
+            vistas.add(c)
+            salida.append(c)
+    return salida
+
+
+def buscar_modelo(doc=None):
+    """Devuelve el modelo más nuevo que encuentre, y las carpetas revisadas."""
+    revisadas = carpetas_a_revisar(doc)
     encontrados = []
-    for carpeta in CARPETAS_MODELO:
-        if not os.path.isdir(carpeta):
+    for carpeta in revisadas:
+        try:
+            nombres = os.listdir(carpeta)
+        except Exception:
             continue
-        for nombre in os.listdir(carpeta):
-            m = PATRON_MODELO.match(nombre)
-            if m:
-                encontrados.append((int(m.group(1)), os.path.join(carpeta, nombre)))
-    return max(encontrados)[1] if encontrados else None
+        for nombre in nombres:
+            if not PATRON_MODELO.search(nombre):
+                continue
+            anio = PATRON_ANIO.search(nombre)
+            encontrados.append((int(anio.group(1)) if anio else 0,
+                                os.path.join(carpeta, nombre)))
+    ruta = max(encontrados)[1] if encontrados else None
+    return ruta, revisadas
 
 
 def _msgbox(texto, titulo="Generador de analíticos", tipo="INFOBOX"):
@@ -571,15 +611,25 @@ def GenerarAnalitico(*args):
         "com.sun.star.frame.Desktop", ctx)
     doc = desktop.getCurrentComponent()
 
-    modelo = buscar_modelo()
+    modelo, revisadas = buscar_modelo(doc)
     base = _primera_que_exista(SALIDAS_POSIBLES, es_carpeta=True)
+    if not base:
+        # Si no está configurada, se usa "Para enviar" al lado del .ods
+        cerca = carpeta_del_ods(doc)
+        if cerca:
+            candidata = os.path.join(cerca, "Para enviar")
+            if os.path.isdir(candidata):
+                base = candidata
     if not modelo:
-        _msgbox("No encontré ningún archivo "
-                '"Analitico Final - 00MODELO<año>.odt".\n'
-                "Revisá CARPETAS_MODELO en el script.")
+        _msgbox("No encontré ningún .odt con \"MODELO\" en el nombre.\n\n"
+                "Busqué en:\n- " + "\n- ".join(revisadas or ["(ninguna carpeta válida)"])
+                + "\n\nPoné el modelo en alguna de esas carpetas, "
+                  "o agregá la tuya en CARPETAS_MODELO (arriba del script).")
         return
     if not base:
-        _msgbox("No encontré la carpeta de salida. Revisá SALIDAS_POSIBLES en el script.")
+        _msgbox("No encontré la carpeta de salida.\n"
+                "Creá una carpeta \"Para enviar\" al lado del .ods, "
+                "o agregá la tuya en SALIDAS_POSIBLES.")
         return
 
     try:
