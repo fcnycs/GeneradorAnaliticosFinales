@@ -424,91 +424,127 @@ def nombre_carpeta(d):
 
 
 def linea_listado(d):
-    """Renglón que se agrega a la hoja 'Listado' para el correo."""
-    dni = re.sub(r"\D", "", d["dni"])
-    return "- %s, %s - %s" % (d["apellido"].upper(), d["nombres"].upper(), dni)
+    """Alumno tal como va en el correo: igual al nombre del archivo, sin el
+    prefijo "Analitico Final - " y sin la extensión."""
+    return "%s, %s (DNI N°%s)" % (d["apellido"].upper(), d["nombres"].upper(),
+                                  _dni_con_puntos(d["dni"]))
 
 
 # ---------------------------------------------------------------------------
 # HOJA "LISTADO"
 # ---------------------------------------------------------------------------
 
-PRIMERA_FILA_LISTADO = 3   # índice 3 = fila 4 de Calc (debajo de "Adjunto...")
+SALUDO = ["Hola buen día,", "Adjunto Certificado Analitico de los siguientes:"]
+DESPEDIDA = "Saludos cordiales,"
+
+# Cuántas filas de la columna A se revisan / limpian
+MAX_FILAS_LISTADO = 500
+
+_RE_ENTRADA_NUEVA = re.compile(r"^\d+\s*-\s*(.+)$")
+_RE_ENTRADA_VIEJA = re.compile(r"^-\s*(.+?)\s*-\s*(\d{6,9})$")
 
 
-def _ultima_fila_listado(hoja):
-    """Última fila con texto en la columna A (índice; -1 si está vacía)."""
-    ultima = -1
-    for f in range(0, 2000):
-        if hoja.getCellByPosition(0, f).getString().strip():
+def _texto_columna_a(hoja):
+    """Devuelve la columna A como lista de textos, hasta la última fila usada."""
+    filas, ultima = [], -1
+    for f in range(MAX_FILAS_LISTADO):
+        t = hoja.getCellByPosition(0, f).getString().strip()
+        filas.append(t)
+        if t:
             ultima = f
         elif f - ultima > 30:
             break
-    return ultima
+    return filas[:ultima + 1]
 
 
-def _copiar_formato(hoja, fila_origen, fila_destino):
-    try:
-        o = hoja.getCellByPosition(0, fila_origen)
-        de = hoja.getCellByPosition(0, fila_destino)
-        de.CharFontName = o.CharFontName
-        de.CharHeight = o.CharHeight
-        de.CharWeight = o.CharWeight
-        de.HoriJustify = o.HoriJustify
-    except Exception:
-        pass
+def leer_listado(hoja):
+    """Reconstruye el listado como [(carrera, [alumnos])] leyendo la columna A.
+
+    Entiende tanto el formato nuevo ("01 - APELLIDO, NOMBRES (DNI N°...)")
+    como el que dejó la macro anterior ("- APELLIDO, NOMBRES - 12345678").
+    """
+    sic = []                       # secciones: lista de [carrera, [alumnos]]
+    for texto in _texto_columna_a(hoja):
+        if not texto or texto in SALUDO or texto == DESPEDIDA:
+            continue
+        m = _RE_ENTRADA_NUEVA.match(texto)
+        if m:
+            alumno = m.group(1).strip()
+        else:
+            m = _RE_ENTRADA_VIEJA.match(texto)
+            if m:
+                alumno = "%s (DNI N°%s)" % (m.group(1).strip(),
+                                            _dni_con_puntos(m.group(2)))
+            elif texto.endswith(":"):
+                carrera = texto[:-1].strip()
+                if not sic or sic[-1][0] != carrera:
+                    sic.append([carrera, []])
+                continue
+            else:
+                continue           # cualquier otra cosa se ignora
+        if not sic:
+            sic.append(["", []])
+        if alumno not in sic[-1][1]:
+            sic[-1][1].append(alumno)
+    return sic
+
+
+def armar_correo(secciones):
+    """Arma el texto completo del correo a partir de las secciones."""
+    lineas = list(SALUDO)
+    for carrera, alumnos in secciones:
+        if not alumnos:
+            continue
+        lineas.append("")
+        lineas.append((carrera or "SIN CARRERA") + ":")
+        for i, alumno in enumerate(alumnos, start=1):
+            lineas.append("%02d - %s" % (i, alumno))
+    lineas.append("")
+    lineas.append(DESPEDIDA)
+    return lineas
+
+
+def escribir_listado(hoja, secciones):
+    """Vuelca el correo en la columna A, borrando antes lo que hubiera."""
+    lineas = armar_correo(secciones)
+    usadas = len(_texto_columna_a(hoja))
+    for f in range(max(usadas, len(lineas))):
+        hoja.getCellByPosition(0, f).setString(lineas[f] if f < len(lineas) else "")
+    return lineas
 
 
 def actualizar_listado(doc, d):
-    """Agrega el alumno al 'Listado', agrupado por carrera.
+    """Agrega el alumno al correo de la hoja 'Listado' y lo renumera.
 
-    Devuelve un texto para mostrar en el cartel final.
+    Devuelve un texto para el cartel final.
     """
-    entrada = linea_listado(d)
+    alumno = linea_listado(d)
     carrera = (d.get("carrera") or "").strip().upper()
-    encabezado = (carrera + ":") if carrera else ":"
 
     hoja = doc.getSheets().getByName("Listado")
-    ultima = _ultima_fila_listado(hoja)
+    secciones = leer_listado(hoja)
 
-    # ¿ya estaba cargado?
-    for f in range(PRIMERA_FILA_LISTADO, ultima + 1):
-        if hoja.getCellByPosition(0, f).getString().strip() == entrada:
-            return "Ya figuraba en el Listado, no lo repetí."
+    # ¿ya estaba en alguna sección?
+    for _, alumnos in secciones:
+        if alumno in alumnos:
+            return "Ya figuraba en el correo, no lo repetí."
 
-    # Buscar el último encabezado de sección ("CARRERA:")
-    fila_seccion, texto_seccion = None, None
-    for f in range(PRIMERA_FILA_LISTADO, ultima + 1):
-        t = hoja.getCellByPosition(0, f).getString().strip()
-        if t and not t.startswith("-"):
-            fila_seccion, texto_seccion = f, t
+    # sección sin nombre (la que dejó la macro vieja): se le pone la carrera
+    for sec in secciones:
+        if not sec[0] and carrera:
+            sec[0] = carrera
+            break
 
-    if ultima < PRIMERA_FILA_LISTADO:
-        # La lista está vacía: encabezado + primer alumno
-        hoja.getCellByPosition(0, PRIMERA_FILA_LISTADO).setString(encabezado)
-        hoja.getCellByPosition(0, PRIMERA_FILA_LISTADO + 1).setString(entrada)
-        return "Agregado al Listado, sección nueva '%s'." % encabezado
+    for sec in secciones:
+        if sec[0] == carrera:
+            sec[1].append(alumno)
+            break
+    else:
+        secciones.append([carrera, [alumno]])
 
-    if texto_seccion in (None, "", ":"):
-        # Había un encabezado vacío (el bug de la macro vieja): lo completo
-        if fila_seccion is not None:
-            hoja.getCellByPosition(0, fila_seccion).setString(encabezado)
-        hoja.getCellByPosition(0, ultima + 1).setString(entrada)
-        _copiar_formato(hoja, ultima, ultima + 1)
-        return "Agregado al Listado (completé el encabezado '%s')." % encabezado
-
-    if texto_seccion == encabezado:
-        # Misma carrera: va al final de la sección actual
-        hoja.getCellByPosition(0, ultima + 1).setString(entrada)
-        _copiar_formato(hoja, ultima, ultima + 1)
-        return "Agregado al Listado, bajo '%s'." % encabezado
-
-    # Carrera distinta: renglón en blanco + encabezado nuevo + alumno
-    hoja.getCellByPosition(0, ultima + 2).setString(encabezado)
-    hoja.getCellByPosition(0, ultima + 3).setString(entrada)
-    _copiar_formato(hoja, fila_seccion, ultima + 2)
-    _copiar_formato(hoja, ultima, ultima + 3)
-    return "Agregado al Listado, sección nueva '%s'." % encabezado
+    escribir_listado(hoja, secciones)
+    total = sum(len(a) for _, a in secciones)
+    return "Agregado al correo bajo '%s' (%d en total)." % (carrera or "SIN CARRERA", total)
 
 
 # ---------------------------------------------------------------------------
@@ -694,8 +730,19 @@ def GenerarAnalitico(*args):
     desktop.loadComponentFromURL(uno.systemPathToFileUrl(destino), "_blank", 0, ())
 
 
+def _hoja_listado(doc):
+    try:
+        return doc.getSheets().getByName("Listado")
+    except Exception as e:
+        _msgbox("No encontré la hoja 'Listado':\n%s" % e)
+        return None
+
+
 def LimpiarListado(*args):
-    """Botón de la hoja 'Listado': borra los nombres para arrancar el próximo correo."""
+    """Botón de la hoja 'Listado': vacía el correo para la próxima tanda.
+
+    Solo toca la columna A: lo que haya en las demás columnas queda intacto.
+    """
     import uno
 
     ctx = uno.getComponentContext()
@@ -703,34 +750,78 @@ def LimpiarListado(*args):
         "com.sun.star.frame.Desktop", ctx)
     doc = desktop.getCurrentComponent()
 
-    try:
-        hoja = doc.getSheets().getByName("Listado")
-    except Exception as e:
-        _msgbox("No encontré la hoja 'Listado':\n%s" % e)
+    hoja = _hoja_listado(doc)
+    if hoja is None:
         return
 
-    ultima = _ultima_fila_listado(hoja)
-    if ultima < PRIMERA_FILA_LISTADO:
-        _msgbox("El Listado ya está vacío.")
+    secciones = leer_listado(hoja)
+    cantidad = sum(len(a) for _, a in secciones)
+    if not cantidad:
+        _msgbox("El correo ya está vacío.")
         return
 
-    cantidad = sum(
-        1 for f in range(PRIMERA_FILA_LISTADO, ultima + 1)
-        if hoja.getCellByPosition(0, f).getString().strip().startswith("-"))
-
-    if not _preguntar("Se van a borrar %d analíticos del Listado.\n"
-                      "Las dos primeras líneas del correo quedan intactas.\n\n"
+    if not _preguntar("Se van a borrar %d analíticos del correo.\n"
+                      "Solo se toca la columna A; el resto de la hoja queda igual.\n\n"
                       "¿Confirmás?" % cantidad):
         return
 
-    # 1=valor, 2=fecha/hora, 4=texto, 16=fórmula
-    rango = hoja.getCellRangeByPosition(0, PRIMERA_FILA_LISTADO, 5, ultima)
-    rango.clearContents(1 + 2 + 4 + 16)
-
-    _msgbox("Listado limpio. Se borraron %d analíticos." % cantidad)
+    escribir_listado(hoja, [])
+    _msgbox("Correo vacío. Se borraron %d analíticos." % cantidad)
 
 
-g_exportedScripts = (GenerarAnalitico, LimpiarListado)
+class _TextoParaPortapapeles(object):
+    """Envoltorio mínimo para poder poner texto en el portapapeles del sistema."""
+
+    def __init__(self, texto):
+        import uno
+        from com.sun.star.datatransfer import DataFlavor
+        self.texto = texto
+        self.flavor = DataFlavor()
+        self.flavor.MimeType = "text/plain;charset=utf-16"
+        self.flavor.HumanPresentableName = "Unicode text"
+        self.flavor.DataType = uno.getTypeByName("string")
+
+    def getTransferData(self, flavor):
+        return self.texto
+
+    def getTransferDataFlavors(self):
+        return (self.flavor,)
+
+    def isDataFlavorSupported(self, flavor):
+        return flavor.MimeType == self.flavor.MimeType
+
+
+def CopiarCorreo(*args):
+    """Botón opcional: deja el correo entero en el portapapeles."""
+    import uno
+    import unohelper
+    from com.sun.star.datatransfer import XTransferable
+
+    ctx = uno.getComponentContext()
+    desktop = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.Desktop", ctx)
+    doc = desktop.getCurrentComponent()
+
+    hoja = _hoja_listado(doc)
+    if hoja is None:
+        return
+
+    texto = "\n".join(armar_correo(leer_listado(hoja)))
+
+    class Transferible(unohelper.Base, XTransferable, _TextoParaPortapapeles):
+        pass
+
+    try:
+        clip = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.datatransfer.clipboard.SystemClipboard", ctx)
+        clip.setContents(Transferible(texto), None)
+        _msgbox("Correo copiado al portapapeles.\nPegalo en el mail con Ctrl+V.")
+    except Exception as e:
+        _msgbox("No pude copiar al portapapeles (%s).\n\n"
+                "Podés seleccionar la columna A de la hoja y copiarla a mano." % e)
+
+
+g_exportedScripts = (GenerarAnalitico, LimpiarListado, CopiarCorreo)
 
 
 if __name__ == "__main__":
