@@ -185,6 +185,40 @@ def _limpiar(texto):
     return "" if _es_error(t) else t
 
 
+COL_NUM_EDITOR = 3          # EDITOR!D = numeración; "00" marca aplazo o ausente
+FILA_INI_EDITOR = 17        # EDITOR!D18 (índice base 0)
+FILA_FIN_EDITOR = 330
+
+
+def contar_aplazos(datos):
+    """Cuántos '00' hay en la numeración. Es el mismo criterio que usa la
+    planilla para decidir si el promedio va 'con aplazo'."""
+    total, vacias = 0, 0
+    for f in range(FILA_INI_EDITOR, FILA_FIN_EDITOR):
+        v = (datos.celda_xy("EDITOR", COL_NUM_EDITOR, f) or "").strip()
+        if not v:
+            vacias += 1
+            if vacias > 40:
+                break
+            continue
+        vacias = 0
+        if v == "00":
+            total += 1
+    return total
+
+
+def arreglar_promedio(texto, aplazos):
+    """Deja el renglón del promedio con el formato acordado: '(con aplazos)'
+    entre paréntesis, en singular si hay uno solo, y 'centésimas'."""
+    etiqueta = " (con aplazo): " if aplazos == 1 else " (con aplazos): "
+    texto = re.sub(r"\s*con aplazo\s*:\s*", etiqueta, texto, count=1)
+    # "centésimos" -> "centésimas"; en singular también cambia el artículo:
+    # "(siete con un centésimo)" -> "(siete con una centésima)"
+    texto = texto.replace("un centésimo", "una centésima")
+    texto = texto.replace("centésimos", "centésimas").replace("centésimo", "centésima")
+    return texto
+
+
 def leer_todo(datos):
     """Devuelve un dict con los textos y la lista de filas de la tabla."""
     d = {k: _limpiar(datos.celda(h, r)) for k, (h, r) in CELDAS.items()}
@@ -207,6 +241,10 @@ def leer_todo(datos):
         filas.append(celdas)
     d["filas"] = filas
     d["avisos"] = avisos
+    try:
+        d["aplazos"] = contar_aplazos(datos)
+    except Exception:
+        d["aplazos"] = 0
     return d
 
 
@@ -276,42 +314,78 @@ def armar_filas(filas):
 
 
 # ---------------------------------------------------------------------------
-# CABECERA: "Hoja Nº N - Certificado Analítico APELLIDO, NOMBRES (DNI N°...)"
+# PIE DE PÁGINA: "Página 1 de 3 – Certificado analítico de ZANI, DAIANA DNI ..."
 # ---------------------------------------------------------------------------
 
-ESTILO_HOJA = """<style:style style:name="AFHoja" style:family="paragraph" style:parent-style-name="Standard">
- <style:paragraph-properties fo:margin-top="0.15cm" fo:margin-bottom="0cm" fo:text-align="start"/>
- <style:text-properties style:font-name="{fuente}" fo:font-size="10pt"/>
+MARCA_ALUMNO = "#ALUMNO#"
+
+ESTILO_PIE_PAG = """<style:style style:name="AFPiePag" style:family="paragraph" style:parent-style-name="Footer">
+ <style:paragraph-properties fo:text-align="start"/>
+ <style:text-properties fo:color="#000000" style:font-name="{fuente}" fo:font-size="10pt"/>
 </style:style>"""
 
 
-def _parrafo_hoja(alumno):
-    return ('<text:p text:style-name="AFHoja">Hoja N\u00ba '
-            '<text:page-number text:select-page="current">2</text:page-number>'
-            ' - Certificado Anal\u00edtico %s</text:p>' % escape(alumno))
+def _parrafo_pie_pagina(alumno):
+    return ('<text:p text:style-name="AFPiePag">P\u00e1gina '
+            '<text:page-number text:select-page="current">1</text:page-number>'
+            ' de <text:page-count>1</text:page-count>'
+            ' \u2013 Certificado anal\u00edtico de %s</text:p>' % escape(alumno))
 
 
-def poner_renglon_hoja(styles_xml, alumno):
-    """Agrega el renglón de hoja a la cabecera de página, salvo en la primera.
+def poner_pie_pagina(styles_xml, alumno):
+    """Deja el pie con el número de hoja y el alumno, en todas las páginas.
 
-    Se apoya en <style:header-first>, que es la opción "Mismo contenido en la
-    primera página" de Writer: la primera hoja queda como está y de la segunda
-    en adelante aparece el renglón con el número de hoja y el alumno.
+    Si el modelo ya trae un pie con la marca #ALUMNO#, solo reemplaza esa marca
+    (así el formato lo controlás vos desde el modelo). Si no hay pie, lo crea.
     """
-    m = re.search(r'<style:header>(.*?)</style:header>', styles_xml, re.DOTALL)
+    if MARCA_ALUMNO in styles_xml:
+        return styles_xml.replace(MARCA_ALUMNO, escape(alumno))
+
+    m = re.search(r'(<style:master-page\b[^>]*style:name="Standard"[^>]*>)(.*?)(</style:master-page>)',
+                  styles_xml, re.DOTALL)
     if not m:
-        return styles_xml            # el modelo no tiene cabecera: no toco nada
-    cabecera = m.group(1)
+        return styles_xml
+    cuerpo = m.group(2)
+    if "<style:footer>" in cuerpo:      # ya hay pie pero sin marca: no lo toco
+        return styles_xml
 
-    # Primero se reemplaza la cabecera (usando las posiciones ya calculadas)
-    nueva = ("<style:header>" + cabecera + _parrafo_hoja(alumno) + "</style:header>"
-             + "<style:header-first>" + cabecera + "</style:header-first>")
-    styles_xml = styles_xml[:m.start()] + nueva + styles_xml[m.end():]
-
-    # y recién después se agrega el estilo, que va más arriba en el archivo
+    nuevo = (m.group(1) + cuerpo
+             + "<style:footer>" + _parrafo_pie_pagina(alumno) + "</style:footer>"
+             + m.group(3))
+    styles_xml = styles_xml[:m.start()] + nuevo + styles_xml[m.end():]
     return styles_xml.replace(
         "</office:automatic-styles>",
-        ESTILO_HOJA.format(fuente=FUENTE) + "</office:automatic-styles>", 1)
+        ESTILO_PIE_PAG.format(fuente=FUENTE) + "</office:automatic-styles>", 1)
+
+
+# ---------------------------------------------------------------------------
+# FECHA AUTOMÁTICA EN LETRAS
+# ---------------------------------------------------------------------------
+# Dos campos de fecha de Writer que se actualizan solos al abrir el documento.
+# El truco es "transliteration-spellout", que escribe el número con palabras:
+#   campo 1 -> "a los tres días del mes de septiembre del año "
+#   campo 2 -> "dos mil veintiséis"
+
+ESTILOS_FECHA = (
+    '<number:date-style style:name="AFFechaDia" number:language="es" number:country="AR"'
+    ' loext:transliteration-spellout="D=cardinal" number:transliteration-language="es"'
+    ' number:transliteration-country="AR">'
+    '<number:day/><number:text> d\u00edas del mes de </number:text>'
+    '<number:month number:style="long" number:textual="true"/>'
+    '<number:text> del a\u00f1o </number:text></number:date-style>'
+    '<number:date-style style:name="AFFechaAnio" number:language="es" number:country="AR"'
+    ' loext:transliteration-spellout="cardinal" number:transliteration-language="es"'
+    ' number:transliteration-country="AR">'
+    '<number:year number:style="long"/></number:date-style>')
+
+
+def campos_fecha_hoy():
+    """Los dos campos, con el texto de hoy como valor inicial."""
+    from datetime import date
+    hoy = date.today().isoformat() + "T00:00:00"
+    return ('<text:date style:data-style-name="AFFechaDia" text:date-value="%s"></text:date>'
+            '<text:date style:data-style-name="AFFechaAnio" text:date-value="%s"></text:date>'
+            % (hoy, hoy))
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +430,12 @@ def generar_odt(modelo_odt, salida_odt, d):
 
     # 1) estilos nuevos
     xml = xml.replace("</office:automatic-styles>",
-                      ESTILOS_NUEVOS + "</office:automatic-styles>")
+                      ESTILOS_NUEVOS + ESTILOS_FECHA + "</office:automatic-styles>")
+    if "xmlns:loext=" not in xml:
+        xml = xml.replace(
+            "<office:document-content ",
+            '<office:document-content xmlns:loext='
+            '"urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" ', 1)
 
     # 2) párrafo de CERTIFICO: se lo ubica por su contenido, porque el nombre
     #    del estilo cambia si alguien abre y guarda el modelo con LibreOffice.
@@ -376,12 +455,16 @@ def generar_odt(modelo_odt, salida_odt, d):
     xml = xml[:m.start()] + tabla + xml[m.end():]
 
     # 4) pie del documento
-    cierre = (d["cierre_1"].rstrip() + " " + d["cierre_2"].lstrip()).strip()
+    # El cierre termina en "...a los " y sigue con los dos campos de fecha,
+    # que se actualizan solos cada vez que se abre el documento.
+    cierre = '<text:p text:style-name="AFPie">%s%s.<text:tab/></text:p>' % (
+        escape(d["cierre_1"].rstrip() + " "), campos_fecha_hoy())
     pie = "".join([
         _parrafo_pie(_sin_guiones(d["fecha_egreso"])),
-        _parrafo_pie(_sin_guiones(d["promedio"])),
+        _parrafo_pie(arreglar_promedio(_sin_guiones(d["promedio"]),
+                                       d.get("aplazos", 0))),
         _parrafo_pie(_sin_guiones(d["escala"])),
-        _parrafo_pie(_sin_guiones(cierre)),
+        cierre,
     ])
     xml = re.sub(r'(</table:table>)(.*?)(</office:text>)',
                  lambda mm: mm.group(1) + '<text:p text:style-name="AFPie"/>' + pie + mm.group(3),
@@ -389,11 +472,9 @@ def generar_odt(modelo_odt, salida_odt, d):
 
     contenidos["content.xml"] = xml.encode("utf-8")
 
-    # Renglón de hoja en la cabecera, de la página 2 en adelante
-    alumno = "%s, %s (DNI N°%s)" % (d["apellido"].upper(), d["nombres"].upper(),
-                                    _dni_con_puntos(d["dni"]))
-    contenidos["styles.xml"] = poner_renglon_hoja(
-        contenidos["styles.xml"].decode("utf-8"), alumno).encode("utf-8")
+    # Pie de página con el número de hoja y el alumno
+    contenidos["styles.xml"] = poner_pie_pagina(
+        contenidos["styles.xml"].decode("utf-8"), alumno_para_pie(d)).encode("utf-8")
 
     with zipfile.ZipFile(salida_odt, "w", zipfile.ZIP_DEFLATED) as z:
         # mimetype va primero y sin comprimir
@@ -412,8 +493,15 @@ def _dni_con_puntos(dni):
 
 
 def nombre_archivo(d):
-    return "Analitico Final - %s, %s (DNI N°%s).odt" % (
-        d["apellido"].upper(), d["nombres"].upper(), _dni_con_puntos(d["dni"]))
+    """Nombre del .odt: apellido primero, para que les ordene alfabéticamente."""
+    return "%s, %s - Certificado Analitico.odt" % (
+        d["apellido"].upper(), d["nombres"].upper())
+
+
+def alumno_para_pie(d):
+    """Cómo aparece el alumno en el pie: 'ZANI, DAIANA DNI 43530957'."""
+    return "%s, %s DNI %s" % (d["apellido"].upper(), d["nombres"].upper(),
+                              re.sub(r"\D", "", d["dni"] or ""))
 
 
 def nombre_carpeta(d):
