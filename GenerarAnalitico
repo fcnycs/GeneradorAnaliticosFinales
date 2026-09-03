@@ -862,19 +862,36 @@ def LimpiarListado(*args):
     _msgbox("Correo vacío. Se borraron %d analíticos." % cantidad)
 
 
-def CopiarCorreo(*args):
-    """Botón: selecciona el correo en la hoja y lo copia.
+def _texto_del_portapapeles(clip):
+    """Lee el portapapeles, para poder confirmar que la copia salió bien."""
+    try:
+        contenido = clip.getContents()
+        for fl in contenido.getTransferDataFlavors():
+            if not fl.MimeType.startswith("text/plain"):
+                continue
+            datos = contenido.getTransferData(fl)
+            if isinstance(datos, str):
+                return datos
+            cod = "utf-16" if "utf-16" in fl.MimeType else "utf-8"
+            return bytes(datos).decode(cod, "replace")
+    except Exception:
+        pass
+    return None
 
-    Hace lo mismo que seleccionar la columna A a mano y apretar Ctrl+C, así que
-    lo que se pega en el mail sale igual que cuando lo copiás vos. (Antes esto
-    armaba el texto y lo metía en el portapapeles por la API; el texto salía en
-    UTF-16 y algunos programas lo pegaban con símbolos raros entre las letras.)
+
+def CopiarCorreo(*args):
+    """Botón: deja el correo de la hoja 'Listado' en el portapapeles.
+
+    Usa el mismo mecanismo que el Ctrl+C de Calc (el "transferible" que arma el
+    propio programa), así el texto se pega con los acentos bien. Antes esto se
+    hacía con .uno:Copy, que a veces no llegaba a ejecutarse y dejaba en el
+    portapapeles lo que hubiera de antes sin avisar de nada.
     """
     import uno
 
     ctx = uno.getComponentContext()
-    desktop = ctx.ServiceManager.createInstanceWithContext(
-        "com.sun.star.frame.Desktop", ctx)
+    smgr = ctx.ServiceManager
+    desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     doc = desktop.getCurrentComponent()
 
     hoja = _hoja_listado(doc)
@@ -891,12 +908,19 @@ def CopiarCorreo(*args):
         ctrl.setActiveSheet(hoja)
         ctrl.select(hoja.getCellRangeByPosition(0, 0, 0, usadas - 1))
 
-        despachador = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.frame.DispatchHelper", ctx)
-        despachador.executeDispatch(ctrl.getFrame(), ".uno:Copy", "", 0, ())
+        clip = smgr.createInstanceWithContext(
+            "com.sun.star.datatransfer.clipboard.SystemClipboard", ctx)
+        clip.setContents(ctrl.getTransferable(), None)
+        copiado = _texto_del_portapapeles(clip)
     except Exception as e:
         _msgbox("No pude copiar (%s).\n\n"
-                "Seleccioná la columna A de la hoja y copiala con Ctrl+C." % e)
+                "La columna A ya quedó seleccionada: copiala con Ctrl+C." % e)
+        return
+
+    # Se confirma que en el portapapeles quedó el correo y no otra cosa
+    if not copiado or SALUDO[0] not in copiado:
+        _msgbox("La copia no se completó.\n\n"
+                "Dejé la columna A seleccionada: copiala con Ctrl+C.")
         return
 
     secciones = leer_listado(hoja)
