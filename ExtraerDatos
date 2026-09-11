@@ -35,6 +35,61 @@ def msgbox(message):
     )
     box.execute()
 
+
+# Palabras que pertenecen a las columnas de la derecha (Nota / Aprobado por /
+# Acta-Resolución), nunca al nombre de la materia.
+PALABRAS_COLA = {
+    "por", "de", "equiv", "equiv.", "equivalencia", "examen",
+    "promoción", "promocion", "resolución", "resolucion", "resol", "resol.",
+    "aprobado", "ausente", "aprobo", "(aprobo)",
+}
+
+
+def es_token_de_cola(token):
+    """¿Este pedazo suelto es de las columnas de la derecha y no del nombre?
+
+    Los nombres de materia vienen SIEMPRE en mayúsculas ("PARASITOLOGIA",
+    "EL ANCIANO"). En cambio la cola trae palabras con minúsculas
+    ("Resolución", "por"), siglas mixtas ("DFCNyCS") o códigos con números
+    y barras ("80/18", "P12-18/18", "2018-P-11-1").
+    """
+    t = token.strip()
+    if not t:
+        return False
+    if t.lower() in PALABRAS_COLA:
+        return True
+    if re.search(r'\d', t) and re.search(r'[/-]', t):
+        return True
+    # sigla tipo DFCNyCS: letras, con alguna minúscula en el medio
+    if re.match(r'^[A-Za-z.]{3,}$', t) and t != t.upper():
+        return True
+    return False
+
+
+def partir_continuacion(linea):
+    """Devuelve (parte_del_nombre, parte_de_la_cola).
+
+    Cuando el PDF parte una fila en dos renglones, el segundo suele traer el
+    final del nombre y, pegado, un pedazo de las columnas de la derecha:
+        'EMERGENTOLOGÍA Resolución'  ->  ('EMERGENTOLOGÍA', 'Resolución')
+        'PARASITOLOGIA'              ->  ('PARASITOLOGIA', '')
+        'Resol DFCNyCS 256/23'       ->  ('', 'Resol DFCNyCS 256/23')
+    """
+    tokens = linea.split()
+    i = len(tokens)
+    corte = len(tokens)
+    while i > 0:
+        t = tokens[i - 1]
+        if es_token_de_cola(t):
+            i -= 1
+            corte = i            # acá sí estamos seguros de que es cola
+        elif re.match(r'^\d+$', t):
+            i -= 1               # un número suelto (folio) es ambiguo: sigo mirando
+        else:
+            break
+    return " ".join(tokens[:corte]), " ".join(tokens[corte:])
+
+
 def limpiar_registro(record):
     """
     Limpia el registro removiendo patrones no deseados derivados de cortes de página,
@@ -84,110 +139,131 @@ def limpiar_registro(record):
     cleaned = " ".join(record.split())
     return prefix + cleaned
 
+# Resolución de equivalencia: "DFCNyCS 461/17", "DECNyCS 330/19", "80/18".
+RESOLUCION_RE = re.compile(r'([A-Za-zÁÉÍÓÚÑ][\w.]*\s+)?(\d+\s*/\s*\d+)')
+
+# "Equivalencia", "Equiv. por Resolución", "Equiv por Resol"...
+TIPO_EQUIVALENCIA_RE = re.compile(r'\bEquiv', re.IGNORECASE)
+TIPO_EXAMEN_RE = re.compile(r'\bExamen\b', re.IGNORECASE)
+TIPO_PROMOCION_RE = re.compile(r'\bPromoci[óo]n\b', re.IGNORECASE)
+
+# Nota de aprobación por equivalencia: "Aprobado" o "A (Aprobo)".
+NOTA_APROBADO_RE = re.compile(r'^(Aprobado|A\s*\(\s*Aprob[oó]\s*\))', re.IGNORECASE)
+NOTA_AUSENTE_RE = re.compile(r'^Ausente\b', re.IGNORECASE)
+
+
 def extract_fields(record):
     """
     Extrae los campos del registro en 7 columnas.
+
+    Las filas de equivalencia no siempre vienen en el mismo orden ni con las
+    mismas palabras: el certificado escribe la nota como "Aprobado" o como
+    "A (Aprobo)", y el tipo como "Equivalencia" o "Equiv. por Resolución"
+    (que además el PDF suele partir en dos renglones). Por eso, para esas
+    filas se busca cada dato por su forma y no por su posición.
     """
     record = " ".join(record.split())
-    
+
     date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', record)
     if not date_match:
         return None
-    
+
     actividades = record[:date_match.start()].strip()
     fecha = date_match.group(1)
     remainder = record[date_match.end():].strip()
-    
-    col_c = ""
-    col_d = ""
-    col_e = ""
-    col_f = ""
-    col_g = ""
-    
-    tokens = remainder.split()
-    if not tokens:
+
+    col_c = col_d = col_e = col_f = col_g = ""
+
+    if not remainder:
         return None
-    
+
+    # ------------------------------------------------------------------
+    # Caso 1: aprobada por equivalencia (no tiene libro ni folio)
+    # ------------------------------------------------------------------
+    if TIPO_EQUIVALENCIA_RE.search(remainder) and NOTA_APROBADO_RE.match(remainder):
+        col_c = "Aprobado"
+        col_d = "Equivalencia"
+        m = RESOLUCION_RE.search(remainder)
+        if m:
+            sigla = (m.group(1) or "").strip()
+            numero = m.group(2).replace(" ", "")
+            col_e = (sigla + " " + numero).strip()
+        return {
+            "actividades": actividades, "fecha": fecha, "col_c": col_c,
+            "col_d": col_d, "col_e": col_e, "col_f": col_f, "col_g": col_g,
+        }
+
+    tokens = remainder.split()
     idx = 0
-    
-    if idx < len(tokens):
-        if tokens[idx] in ["Aprobado", "Ausente"]:
+
+    # ------------------------------------------------------------------
+    # Caso 2: "Aprobado" / "Ausente" seguido del tipo
+    # ------------------------------------------------------------------
+    if NOTA_AUSENTE_RE.match(remainder) or tokens[0] in ("Aprobado", "Ausente"):
+        col_c = tokens[idx]
+        idx += 1
+
+        if idx < len(tokens) and tokens[idx] in ["Equivalencia", "Examen", "Promoción"]:
+            col_d = tokens[idx]
+            idx += 1
+
+            if col_d == "Equivalencia":
+                m = RESOLUCION_RE.search(" ".join(tokens[idx:]))
+                if m:
+                    sigla = (m.group(1) or "").strip()
+                    col_e = (sigla + " " + m.group(2).replace(" ", "")).strip()
+
+            elif col_d in ["Examen", "Promoción"]:
+                for destino in ("col_e", "col_f", "col_g"):
+                    if idx < len(tokens):
+                        if destino == "col_e":
+                            col_e = tokens[idx]
+                        elif destino == "col_f":
+                            col_f = tokens[idx]
+                        else:
+                            col_g = tokens[idx]
+                        idx += 1
+
+    # ------------------------------------------------------------------
+    # Caso 3: nota numérica, "7 (SIETE)"
+    # ------------------------------------------------------------------
+    elif re.match(r'^\d+$', tokens[idx]) or re.match(r'^\d+\(', tokens[idx]):
+        if re.match(r'^\d+$', tokens[idx]):
             col_c = tokens[idx]
             idx += 1
-            
-            if idx < len(tokens) and tokens[idx] in ["Equivalencia", "Examen", "Promoción"]:
-                col_d = tokens[idx]
-                idx += 1
-                
-                if col_d == "Equivalencia":
-                    resolucion_parts = []
-                    if idx < len(tokens) and tokens[idx] == "DFCNyCS":
-                        resolucion_parts.append(tokens[idx])
+            paren_parts = []
+            while idx < len(tokens):
+                if tokens[idx].startswith('('):
+                    paren_parts.append(tokens[idx])
+                    if tokens[idx].endswith(')'):
                         idx += 1
-                        
-                        while idx < len(tokens):
-                            token = tokens[idx]
-                            if re.search(r'\d', token) or token == "/":
-                                resolucion_parts.append(token)
-                                idx += 1
-                                if re.search(r'\d+/\d+', " ".join(resolucion_parts)):
-                                    break
-                            else:
-                                break
-                        
-                        col_e = " ".join(resolucion_parts)
-                
-                elif col_d in ["Examen", "Promoción"]:
-                    if idx < len(tokens):
-                        col_e = tokens[idx]
-                        idx += 1
-                    if idx < len(tokens):
-                        col_f = tokens[idx]
-                        idx += 1
-                    if idx < len(tokens):
-                        col_g = tokens[idx]
-                        idx += 1
-            
-        elif re.match(r'^\d+$', tokens[idx]) or re.match(r'^\d+\(', tokens[idx]):
-            if re.match(r'^\d+$', tokens[idx]):
-                col_c = tokens[idx]
-                idx += 1
-                paren_parts = []
-                while idx < len(tokens):
-                    if tokens[idx].startswith('('):
-                        paren_parts.append(tokens[idx])
-                        if tokens[idx].endswith(')'):
-                            idx += 1
-                            break
-                        idx += 1
-                    elif paren_parts and not tokens[idx-1].endswith(')'):
-                        paren_parts.append(tokens[idx])
-                        if tokens[idx].endswith(')'):
-                            idx += 1
-                            break
-                        idx += 1
-                    else:
                         break
-                if paren_parts:
-                    col_c += " " + " ".join(paren_parts)
-            else:
-                col_c = tokens[idx]
-                idx += 1
-            
-            if idx < len(tokens) and tokens[idx] in ["Examen", "Promoción"]:
-                col_d = tokens[idx]
-                idx += 1
-            
-            if idx < len(tokens):
-                col_e = tokens[idx]
-                idx += 1
-            if idx < len(tokens):
-                col_f = tokens[idx]
-                idx += 1
-            if idx < len(tokens):
-                col_g = tokens[idx]
-                idx += 1
-    
+                    idx += 1
+                elif paren_parts and not tokens[idx - 1].endswith(')'):
+                    paren_parts.append(tokens[idx])
+                    if tokens[idx].endswith(')'):
+                        idx += 1
+                        break
+                    idx += 1
+                else:
+                    break
+            if paren_parts:
+                col_c += " " + " ".join(paren_parts)
+        else:
+            col_c = tokens[idx]
+            idx += 1
+
+        if idx < len(tokens) and tokens[idx] in ["Examen", "Promoción"]:
+            col_d = tokens[idx]
+            idx += 1
+
+        if idx < len(tokens):
+            col_e = tokens[idx]; idx += 1
+        if idx < len(tokens):
+            col_f = tokens[idx]; idx += 1
+        if idx < len(tokens):
+            col_g = tokens[idx]; idx += 1
+
     return {
         "actividades": actividades.strip(),
         "fecha": fecha,
@@ -195,8 +271,9 @@ def extract_fields(record):
         "col_d": col_d,
         "col_e": col_e,
         "col_f": col_f,
-        "col_g": col_g
+        "col_g": col_g,
     }
+
 
 def ExtraerDatos(*args):
     ctx = uno.getComponentContext()
@@ -343,12 +420,16 @@ def ExtraerDatos(*args):
             if recorte and not es_linea_ignorar(recorte) and not subject_start_re.match(recorte):
                 # Es continuación de la materia anterior: agregarla antes de la fecha
                 if registro_actual:
+                    parte_nombre, parte_cola = partir_continuacion(recorte)
                     fecha_match = re.search(r'\b\d{2}/\d{2}/\d{4}\b', registro_actual)
-                    if fecha_match:
+                    if fecha_match and parte_nombre:
                         pos_fecha = fecha_match.start()
-                        registro_actual = registro_actual[:pos_fecha] + recorte + " " + registro_actual[pos_fecha:]
-                    else:
-                        registro_actual += " " + recorte
+                        registro_actual = (registro_actual[:pos_fecha] + parte_nombre + " "
+                                           + registro_actual[pos_fecha:])
+                    elif parte_nombre:
+                        registro_actual += " " + parte_nombre
+                    if parte_cola:
+                        registro_actual += " " + parte_cola
             break
         
         if es_linea_ignorar(clean_line):
@@ -366,12 +447,19 @@ def ExtraerDatos(*args):
                 if not tiene_fecha_registro and not tiene_fecha_linea:
                     registro_actual += " " + clean_line
                 elif tiene_fecha_registro and not tiene_fecha_linea:
+                    # La continuación puede traer el final del nombre y, pegado,
+                    # un pedazo de las columnas de la derecha. Cada parte va a
+                    # su lugar: el nombre antes de la fecha, la cola al final.
+                    parte_nombre, parte_cola = partir_continuacion(clean_line)
                     fecha_match = re.search(r'\b\d{2}/\d{2}/\d{4}\b', registro_actual)
-                    if fecha_match:
+                    if fecha_match and parte_nombre:
                         pos_fecha = fecha_match.start()
-                        registro_actual = registro_actual[:pos_fecha] + clean_line + " " + registro_actual[pos_fecha:]
-                    else:
-                        registro_actual += " " + clean_line
+                        registro_actual = (registro_actual[:pos_fecha] + parte_nombre + " "
+                                           + registro_actual[pos_fecha:])
+                    elif parte_nombre:
+                        registro_actual += " " + parte_nombre
+                    if parte_cola:
+                        registro_actual += " " + parte_cola
                 else:
                     registro_actual += " " + clean_line
             else:
