@@ -419,9 +419,12 @@ def sumar_horas_electivas(filas_editor):
     filas_editor es [(asignatura, horas)] o [(asignatura, horas, nota)] leído
     de la hoja EDITOR. Una electiva desaprobada o ausente no suma; si no se
     sabe la nota (no está esa columna), se cuenta igual.
-    Devuelve (horas, cuántas).
+
+    Devuelve (horas, cuántas, cuántas_sin_horas). Las horas se tipean a mano,
+    así que las que quedaron en blanco se cuentan aparte: sin eso la suma da
+    de menos y parecería que al alumno le faltan horas.
     """
-    total, cuantas = 0.0, 0
+    total, cuantas, sin_horas = 0.0, 0, 0
     for fila in filas_editor:
         asignatura, horas = fila[0], fila[1]
         nota = fila[2] if len(fila) > 2 else ""
@@ -430,8 +433,12 @@ def sumar_horas_electivas(filas_editor):
         if nota and estado_de_la_nota(nota) == DESAPROBADA:
             continue
         cuantas += 1
-        total += horas_de(horas)
-    return total, cuantas
+        hs = horas_de(horas)
+        if hs:
+            total += hs
+        else:
+            sin_horas += 1
+    return total, cuantas, sin_horas
 
 
 def armar_cursadas(filas):
@@ -456,13 +463,14 @@ def armar_cursadas(filas):
 # COMPARACIÓN
 # ---------------------------------------------------------------------------
 
-def comparar(plan, cursadas, horas_electivas=None):
+def comparar(plan, cursadas, horas_electivas=None, electivas_sin_horas=0):
     """Cruza el plan con lo que rindió el alumno.
 
     horas_electivas es lo que suma la columna Hs. del EDITOR, para los planes
     que piden las electivas por carga horaria (ELECTIVAS_HS) en vez de por
-    cantidad. Si no se pudo leer, va None y el chequeo lo informa en vez de
-    dar por faltante algo que no sabe.
+    cantidad. Si no se pudo leer, o si quedaron electivas sin las horas
+    tipeadas (electivas_sin_horas), el chequeo lo informa en vez de dar por
+    faltante algo que no sabe.
 
     Para cada materia del plan busca primero el nombre igual (o alguno de sus
     alias) y, si no aparece, el nombre más parecido. Cuando una materia figura
@@ -534,7 +542,8 @@ def comparar(plan, cursadas, horas_electivas=None):
         "fuera_del_plan": [],
         "electivas": {"pide": plan.get("electivas", 0),
                       "pide_hs": plan.get("electivas_hs", 0),
-                      "tiene": 0, "horas": horas_electivas, "nombres": []},
+                      "tiene": 0, "horas": horas_electivas,
+                      "sin_horas": electivas_sin_horas, "nombres": []},
     }
 
     for n, materia in enumerate(plan["materias"]):
@@ -573,10 +582,12 @@ def comparar(plan, cursadas, horas_electivas=None):
     resultado["faltan_horas_electivas"] = 0
     resultado["horas_electivas_sin_leer"] = False
     if electivas["pide_hs"]:
-        if horas_electivas:
+        if horas_electivas and not electivas_sin_horas:
             resultado["faltan_horas_electivas"] = max(
                 0, electivas["pide_hs"] - horas_electivas)
         else:
+            # O no se pudo leer la columna, o hay electivas a las que todavía
+            # no les tipearon las horas: se avisa, no se da por faltante.
             resultado["horas_electivas_sin_leer"] = True
 
     resultado["ok"] = (not resultado["faltantes"]
@@ -645,9 +656,16 @@ def armar_resumen(alumno, resultado, femenino=False):
                       % (quien, "" if len(pedazos) == 1 else "n", ", ".join(pedazos)))
 
     if resultado["horas_electivas_sin_leer"]:
-        partes.append("OJO: el plan pide %g hs de actividades electivas y no pude "
-                      "leer la columna Hs. del EDITOR. Revisalo a mano."
-                      % electivas["pide_hs"])
+        if electivas["sin_horas"]:
+            partes.append(
+                "OJO: hay %s sin las horas cargadas en la columna Hs. del "
+                "EDITOR. El plan pide %g hs: completalas y volvé a chequear."
+                % (_plural(electivas["sin_horas"], "actividad electiva",
+                           "actividades electivas"), electivas["pide_hs"]))
+        else:
+            partes.append("OJO: el plan pide %g hs de actividades electivas y no "
+                          "pude leer la columna Hs. del EDITOR. Revisalo a mano."
+                          % electivas["pide_hs"])
 
     resumen_plan = "Plan: %s\n(%d materias" % (plan["titulo"], total)
     if obligatorias != total:
@@ -672,7 +690,7 @@ def armar_resumen(alumno, resultado, femenino=False):
                       + _lista(["%s  =  %s" % (m.nombre, c["nombre"])
                                 for m, c, _ in resultado["aproximadas"]]))
     if resultado["optativas_faltantes"]:
-        partes.append("OPTATIVAS DEL PLAN QUE NO RINDIÓ (no bloquean):\n"
+        partes.append("MATERIAS NO OBLIGATORIAS QUE NO RINDIÓ (no bloquean):\n"
                       + _lista(resultado["optativas_faltantes"]))
     if resultado["fuera_del_plan"]:
         partes.append("EN EL ANALÍTICO PERO NO EN EL PLAN:\n"
@@ -701,7 +719,7 @@ def armar_detalle(resultado):
     for materia in plan["materias"]:
         datos = por_materia.get(materia.orden)
         if datos is None:
-            etiqueta = "FALTA" if materia.obligatoria else "FALTA (optativa)"
+            etiqueta = "FALTA" if materia.obligatoria else "FALTA (no obligatoria)"
             filas.append([etiqueta, materia.nombre, materia.grupo, "", "", ""])
             continue
         etiqueta, cursada, ratio = datos
@@ -720,7 +738,10 @@ def armar_detalle(resultado):
                           "El plan pide %d" % electivas["pide"]])
         if electivas["pide_hs"]:
             if resultado["horas_electivas_sin_leer"]:
-                estado, observacion = "REVISAR", "No pude leer la columna Hs. del EDITOR"
+                estado = "REVISAR"
+                observacion = ("Faltan tipear las horas de %d electiva(s)"
+                               % electivas["sin_horas"]) if electivas["sin_horas"] \
+                    else "No pude leer la columna Hs. del EDITOR"
             elif resultado["faltan_horas_electivas"]:
                 estado = "FALTA"
                 observacion = ("Faltan %g hs"
@@ -971,14 +992,17 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
         return None
 
     # Las horas de electivas solo se leen si el plan las pide así.
-    horas_electivas = None
+    horas_electivas, electivas_sin_horas = None, 0
     if plan.get("electivas_hs"):
         try:
-            horas_electivas = sumar_horas_electivas(leer_filas_editor(doc))[0] or None
+            horas_electivas, _, electivas_sin_horas = sumar_horas_electivas(
+                leer_filas_editor(doc))
+            horas_electivas = horas_electivas or None
         except Exception:
-            horas_electivas = None
+            horas_electivas, electivas_sin_horas = None, 0
 
-    resultado = comparar(plan, armar_cursadas(filas), horas_electivas)
+    resultado = comparar(plan, armar_cursadas(filas), horas_electivas,
+                         electivas_sin_horas)
     resumen = armar_resumen(alumno, resultado, femenino)
 
     aviso = ""
@@ -1130,7 +1154,7 @@ def main(argv):
     plan = leer_plan(argv[1])
     origen = argv[2]
     horas_electivas = None
-    femenino = False
+    femenino, electivas_sin_horas = False, 0
     if origen.lower().endswith(".ods"):
         hojas = _grillas_de_ods(origen)
         filas, hoja = leer_materias_de_ods(origen, hojas)
@@ -1138,8 +1162,9 @@ def main(argv):
         femenino = "SRTA" in normalizar(
             _celda_de_grilla(hojas.get(CELDA_GENERO[0], []), fil, col))
         if plan.get("electivas_hs"):
-            horas_electivas = sumar_horas_electivas(
-                leer_filas_editor_de_ods(hojas))[0] or None
+            horas_electivas, _, electivas_sin_horas = sumar_horas_electivas(
+                leer_filas_editor_de_ods(hojas))
+            horas_electivas = horas_electivas or None
     else:
         filas, hoja = leer_materias_de_texto(origen)
 
@@ -1147,7 +1172,8 @@ def main(argv):
         print("No encontré materias en %s" % origen)
         return 1
 
-    resultado = comparar(plan, armar_cursadas(filas), horas_electivas)
+    resultado = comparar(plan, armar_cursadas(filas), horas_electivas,
+                         electivas_sin_horas)
     print(armar_resumen(argv[3] if len(argv) > 3 else "", resultado, femenino))
     print("\n(Materias leídas de '%s': %d)" % (hoja, len(filas)))
     return 0 if resultado["ok"] else 1

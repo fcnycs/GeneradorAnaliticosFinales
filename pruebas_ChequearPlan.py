@@ -153,15 +153,19 @@ chk(C.horas_de("95 hs") == 95 and C.horas_de("4,5") == 4.5 and C.horas_de("") ==
 filas_editor = [("ENFERMERIA BASICA", "170"),
                 ("ACTIVIDAD ELECTIVA: TALLER DE RCP", "60"),
                 ("ACTIVIDAD ELECTIVA: INFORMATICA", "35")]
-chk(C.sumar_horas_electivas(filas_editor) == (95.0, 2), C.sumar_horas_electivas(filas_editor))
+chk(C.sumar_horas_electivas(filas_editor) == (95.0, 2, 0), C.sumar_horas_electivas(filas_editor))
 # una electiva desaprobada o ausente no suma horas
 con_nota = [("ACTIVIDAD ELECTIVA: TALLER DE RCP", "60", "8 (OCHO)"),
             ("ACTIVIDAD ELECTIVA: INFORMATICA", "35", "AUSENTE"),
             ("ACTIVIDAD ELECTIVA: INGLES", "35", "2 (DOS)")]
-chk(C.sumar_horas_electivas(con_nota) == (60.0, 1), C.sumar_horas_electivas(con_nota))
+chk(C.sumar_horas_electivas(con_nota) == (60.0, 1, 0), C.sumar_horas_electivas(con_nota))
 # si no está la columna de notas, se cuentan igual
-chk(C.sumar_horas_electivas([(a, h) for a, h, _ in con_nota]) == (130.0, 3),
+chk(C.sumar_horas_electivas([(a, h) for a, h, _ in con_nota]) == (130.0, 3, 0),
     "sin columna de notas")
+# las horas se tipean a mano: una electiva sin horas se cuenta aparte
+sin_tipear = [("ACTIVIDAD ELECTIVA: TALLER DE RCP", "60", "8"),
+              ("ACTIVIDAD ELECTIVA: INGLES", "", "7")]
+chk(C.sumar_horas_electivas(sin_tipear) == (60.0, 2, 1), C.sumar_horas_electivas(sin_tipear))
 chk(C.columna_por_encabezado(["", "", "", "", "ASIGNATURAS", "Hs,", "FECHA", "CALIFICACIÓN"],
                              C.PREFIJOS_NOTA, None) == 7, "detectar CALIFICACIÓN")
 chk(C.columna_por_encabezado(["", "", "", "", "ASIGNATURAS", "Hs,", "FECHA"],
@@ -176,6 +180,12 @@ chk(not r["ok"] and r["faltan_horas_electivas"] == 35, "faltan 35 hs")
 r = C.comparar(plan_hs, cursadas_hs, None)
 chk(r["ok"] and r["horas_electivas_sin_leer"], "horas sin leer: avisa, no bloquea")
 chk("no pude leer la columna Hs" in C.armar_resumen("X", r), C.armar_resumen("X", r))
+# las horas se tipean a mano: si a una electiva todavía no se las pusieron,
+# también avisa en vez de dar por faltantes las horas que no puede saber
+r = C.comparar(plan_hs, cursadas_hs, 60.0, 1)
+chk(r["ok"] and r["horas_electivas_sin_leer"] and not r["faltan_horas_electivas"],
+    "electiva sin horas tipeadas")
+chk("sin las horas cargadas" in C.armar_resumen("X", r), C.armar_resumen("X", r))
 
 # --- el plan real de ENFERMERIA -------------------------------------------
 enf = C.leer_plan(os.path.join(os.path.dirname(os.path.abspath(__file__)),

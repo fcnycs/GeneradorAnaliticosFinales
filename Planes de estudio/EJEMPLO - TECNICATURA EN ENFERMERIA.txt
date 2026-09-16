@@ -22,7 +22,11 @@
 #         los nombres después de "|" son alias: se usan cuando el analítico
 #         escribe la materia distinto que el plan.
 #   * ? MATERIA             el signo de pregunta adelante marca que NO es
-#         obligatoria (optativa): si falta, se informa pero no bloquea.
+#         obligatoria: si falta, se informa pero no bloquea. Ojo: esto no son
+#         las actividades electivas, que van con ELECTIVAS: o ELECTIVAS_HS:.
+#   * ELECTIVAS_HS: 95      si el plan pide las electivas por carga horaria
+#         (como Enfermería) en vez de por cantidad. Las horas salen de la
+#         columna Hs. del EDITOR.
 #
 # No hace falta poner tildes ni respetar mayúsculas: la comparación las ignora,
 # igual que los códigos del tipo "1A - " que trae el analítico.

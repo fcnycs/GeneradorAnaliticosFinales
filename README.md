@@ -112,12 +112,14 @@ ENFERMERIA BASICA
 * `TITULO: ...` = el nombre que aparece en el cartel.
 * `ELECTIVAS: N` = cuántas actividades electivas pide el plan.
 * `ELECTIVAS_HS: N` = para los planes que las piden por carga horaria (es el
-  caso de Enfermería: 95 hs). Las horas se suman de la columna `Hs.` del EDITOR
-  (las electivas desaprobadas o ausentes no suman); si no se pueden leer, el
-  chequeo lo avisa en vez de darlas por faltantes.
+  caso de Enfermería: 95 hs). Las horas salen de la columna `Hs.` del EDITOR,
+  que se completa a mano solo para las electivas. Las desaprobadas o ausentes
+  no suman. Si alguna electiva quedó sin horas cargadas, o no se pudo leer la
+  columna, el chequeo lo avisa en vez de darlas por faltantes.
 * `MATERIA | OTRO NOMBRE` = nombres alternativos, para cuando el analítico la
   escribe distinto que el plan.
-* `?` adelante = optativa: si falta, se informa pero no bloquea.
+* `?` adelante = no obligatoria: si falta, se informa pero no bloquea. (Ojo:
+  esto no son las actividades electivas, que van con `ELECTIVAS:`.)
 
 Está todo explicado también en `Planes de estudio/EJEMPLO - TECNICATURA EN ENFERMERIA.txt`.
 
