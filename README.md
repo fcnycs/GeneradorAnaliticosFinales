@@ -136,7 +136,12 @@ Está todo explicado también en `Planes de estudio/EJEMPLO - TECNICATURA EN ENF
   `Aprobado por Resolución ...` (equivalencias). `Ausente` y las notas menores
   a 4 quedan como pendientes. Si una materia figura dos veces, vale la aprobada.
 * Las actividades electivas se cuentan aparte: por cantidad (`ELECTIVAS:`) o
-  sumando las horas de la columna `Hs.` del EDITOR (`ELECTIVAS_HS:`).
+  sumando las horas de la columna `Hs.` del EDITOR (`ELECTIVAS_HS:`). Si alguna
+  quedó con el texto del desplegable (`ACTIVIDAD ELECTIVA: ESCRIBIR SU
+  NOMBRE...`), avisa: ese texto sale tal cual en el analítico.
+* Una materia que figura varias veces (el aplazo o el ausente y después la
+  aprobada) **no** es una materia ajena al plan: los intentos anteriores se
+  informan aparte, como `INTENTO ANTERIOR`, debajo de su materia.
 
 ### Ajustes
 

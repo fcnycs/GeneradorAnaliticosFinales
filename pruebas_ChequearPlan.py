@@ -45,7 +45,15 @@ plan = {"titulo": "X", "electivas": 0, "ruta": "",
 cursadas = C.armar_cursadas([("FARMACOLOGIA", "2 (DOS)"), ("FARMACOLOGIA", "8 (OCHO)")])
 r = C.comparar(plan, cursadas)
 chk(r["ok"] and len(r["aprobadas"]) == 1 and not r["pendientes"], "repetida: %s" % r["ok"])
-chk(len(r["fuera_del_plan"]) == 1, "la otra queda como fuera del plan")
+# el intento anterior NO es una materia ajena al plan: es la misma rendida dos veces
+chk(not r["fuera_del_plan"], "el aplazo no va a 'fuera del plan'")
+chk(len(r["repetidas"]) == 1 and r["repetidas"][0][0].nombre == "FARMACOLOGIA"
+    and r["repetidas"][0][1]["nota"] == "2 (DOS)", r["repetidas"])
+
+# una materia que no está en el plan sí queda como fuera del plan
+r2 = C.comparar(plan, C.armar_cursadas([("FARMACOLOGIA", "8"), ("TALLER DE TESIS", "9")]))
+chk(len(r2["fuera_del_plan"]) == 1 and not r2["repetidas"],
+    "ajena al plan: %s" % r2["fuera_del_plan"])
 
 # --- plan vacío no explota ---
 r = C.comparar({"titulo": "X", "electivas": 0, "materias": []}, C.armar_cursadas([("A", "7")]))
@@ -186,6 +194,16 @@ r = C.comparar(plan_hs, cursadas_hs, 60.0, 1)
 chk(r["ok"] and r["horas_electivas_sin_leer"] and not r["faltan_horas_electivas"],
     "electiva sin horas tipeadas")
 chk("sin las horas cargadas" in C.armar_resumen("X", r), C.armar_resumen("X", r))
+
+# --- electivas que quedaron con el texto del desplegable -------------------
+comodin = "ACTIVIDAD ELECTIVA: ESCRIBIR SU NOMBRE Y HORA (CUADROS EN BLANCO)"
+chk(C.es_electiva_sin_nombre(comodin) and not C.es_electiva_sin_nombre("ACTIVIDAD ELECTIVA: RCP"),
+    "detectar la electiva sin nombre")
+r = C.comparar({"titulo": "X", "electivas": 0, "materias": []},
+               C.armar_cursadas([(comodin, "8 (OCHO)")] * 3))
+chk(r["electivas"]["sin_nombre"] == 3, r["electivas"]["sin_nombre"])
+chk("hay 3 actividades electivas sin el nombre escrito" in C.armar_resumen("X", r),
+    C.armar_resumen("X", r))
 
 # --- el plan real de ENFERMERIA -------------------------------------------
 enf = C.leer_plan(os.path.join(os.path.dirname(os.path.abspath(__file__)),

@@ -406,6 +406,13 @@ def es_actividad_electiva(nombre):
     return clave.startswith("ACTIVIDAD ELECTIVA") or clave.startswith("ELECTIVA")
 
 
+def es_electiva_sin_nombre(nombre):
+    """La electiva quedó con el texto del desplegable ('ESCRIBIR SU NOMBRE...'),
+    o sea que todavía no le escribieron cuál es. Ese texto sale tal cual en el
+    analítico, así que conviene avisarlo."""
+    return "ESCRIBIR SU NOMBRE" in normalizar(nombre)
+
+
 def horas_de(texto):
     """Saca el número de horas de una celda: '95', '95 hs', '95,5'."""
     t = (texto or "").replace(",", ".").strip()
@@ -462,6 +469,29 @@ def armar_cursadas(filas):
 # ---------------------------------------------------------------------------
 # COMPARACIÓN
 # ---------------------------------------------------------------------------
+
+def materia_del_plan(plan, cursada):
+    """A qué materia del plan corresponde una cursada. (materia, parecido).
+
+    Sirve para los renglones que sobran: casi siempre son la misma materia
+    rendida más de una vez (el aplazo o el ausente, y después la aprobada),
+    no materias ajenas al plan.
+    """
+    for materia in plan["materias"]:
+        if cursada["clave"] in materia.claves:
+            return materia, 1.0
+
+    mejor, mejor_ratio = None, 0
+    for materia in plan["materias"]:
+        if not materia.claves:
+            continue
+        ratio = max(parecido(clave, cursada["clave"]) for clave in materia.claves)
+        if ratio > mejor_ratio:
+            mejor, mejor_ratio = materia, ratio
+    if mejor_ratio >= UMBRAL_PARECIDO:
+        return mejor, mejor_ratio
+    return None, mejor_ratio
+
 
 def comparar(plan, cursadas, horas_electivas=None, electivas_sin_horas=0):
     """Cruza el plan con lo que rindió el alumno.
@@ -538,12 +568,14 @@ def comparar(plan, cursadas, horas_electivas=None, electivas_sin_horas=0):
         "pendientes": [],         # figuran, pero desaprobadas o ausentes
         "aproximadas": [],        # coincidieron por parecido: conviene mirarlas
         "sin_nota": [],           # figuran, pero no se entiende la calificación
+        "repetidas": [],          # rendidas más de una vez (aplazos, ausentes)
         "optativas_faltantes": [],
         "fuera_del_plan": [],
         "electivas": {"pide": plan.get("electivas", 0),
                       "pide_hs": plan.get("electivas_hs", 0),
                       "tiene": 0, "horas": horas_electivas,
-                      "sin_horas": electivas_sin_horas, "nombres": []},
+                      "sin_horas": electivas_sin_horas, "sin_nombre": 0,
+                      "aprobadas": [], "otras": []},
     }
 
     for n, materia in enumerate(plan["materias"]):
@@ -568,11 +600,21 @@ def comparar(plan, cursadas, horas_electivas=None, electivas_sin_horas=0):
 
     for i, cursada in enumerate(cursadas):
         if cursada["electiva"]:
+            if es_electiva_sin_nombre(cursada["nombre"]):
+                resultado["electivas"]["sin_nombre"] += 1
             if cursada["estado"] == APROBADA:
                 resultado["electivas"]["tiene"] += 1
-                resultado["electivas"]["nombres"].append(cursada["nombre"])
+                resultado["electivas"]["aprobadas"].append(cursada)
+            else:
+                resultado["electivas"]["otras"].append(cursada)
         elif i not in usados:
-            resultado["fuera_del_plan"].append(cursada)
+            # Antes de darla por ajena al plan, fijarse si es la misma materia
+            # rendida otra vez: el aplazo o el ausente de una que ya aprobó.
+            materia, ratio = materia_del_plan(plan, cursada)
+            if materia is not None:
+                resultado["repetidas"].append((materia, cursada, ratio))
+            else:
+                resultado["fuera_del_plan"].append(cursada)
 
     electivas = resultado["electivas"]
     resultado["faltan_electivas"] = max(0, electivas["pide"] - electivas["tiene"])
@@ -655,6 +697,14 @@ def armar_resumen(alumno, resultado, femenino=False):
         partes.append("A %s le falta%s: %s."
                       % (quien, "" if len(pedazos) == 1 else "n", ", ".join(pedazos)))
 
+    if electivas["sin_nombre"]:
+        partes.append(
+            "OJO: hay %s sin el nombre escrito (quedó el texto del "
+            "desplegable). Completalo en el EDITOR: ese texto sale tal cual "
+            "en el analítico."
+            % _plural(electivas["sin_nombre"], "actividad electiva",
+                      "actividades electivas"))
+
     if resultado["horas_electivas_sin_leer"]:
         if electivas["sin_horas"]:
             partes.append(
@@ -689,6 +739,18 @@ def armar_resumen(alumno, resultado, femenino=False):
         partes.append("COINCIDENCIAS APROXIMADAS (revisá que sean la misma materia):\n"
                       + _lista(["%s  =  %s" % (m.nombre, c["nombre"])
                                 for m, c, _ in resultado["aproximadas"]]))
+    if resultado["repetidas"]:
+        partes.append(
+            "RENDIDAS MÁS DE UNA VEZ (aplazos o ausentes previos; se tomó la "
+            "aprobada, no bloquean):\n"
+            + _lista(["%s (%s)" % (m.nombre, c["nota"] or "sin nota")
+                      for m, c, _ in resultado["repetidas"]]))
+
+    if resultado["electivas"]["otras"]:
+        partes.append("ACTIVIDADES ELECTIVAS NO APROBADAS:\n"
+                      + _lista(["%s (%s)" % (c["nombre"], c["nota"] or "sin nota")
+                                for c in resultado["electivas"]["otras"]]))
+
     if resultado["optativas_faltantes"]:
         partes.append("MATERIAS NO OBLIGATORIAS QUE NO RINDIÓ (no bloquean):\n"
                       + _lista(resultado["optativas_faltantes"]))
@@ -716,23 +778,44 @@ def armar_detalle(resultado):
         for materia, cursada, ratio in resultado[clave]:
             por_materia[materia.orden] = (etiqueta, cursada, ratio)
 
+    # Los intentos anteriores van pegados abajo de su materia.
+    repetidas_por_materia = {}
+    for materia, cursada, ratio in resultado["repetidas"]:
+        repetidas_por_materia.setdefault(materia.orden, []).append((cursada, ratio))
+
     for materia in plan["materias"]:
         datos = por_materia.get(materia.orden)
         if datos is None:
             etiqueta = "FALTA" if materia.obligatoria else "FALTA (no obligatoria)"
             filas.append([etiqueta, materia.nombre, materia.grupo, "", "", ""])
-            continue
-        etiqueta, cursada, ratio = datos
-        observacion = ""
-        if ratio < 1.0:
-            observacion = "Coincidencia aproximada (%d%%): revisar" % round(ratio * 100)
-        filas.append([etiqueta, materia.nombre, materia.grupo,
-                      cursada["nombre"], cursada["nota"], observacion])
+        else:
+            etiqueta, cursada, ratio = datos
+            observacion = ""
+            if ratio < 1.0:
+                observacion = ("Coincidencia aproximada (%d%%): revisar"
+                               % round(ratio * 100))
+            filas.append([etiqueta, materia.nombre, materia.grupo,
+                          cursada["nombre"], cursada["nota"], observacion])
+
+        for cursada, ratio in repetidas_por_materia.get(materia.orden, []):
+            observacion = "Rendida más de una vez; vale la aprobada"
+            if ratio < 1.0:
+                observacion += " (coincidencia aproximada %d%%)" % round(ratio * 100)
+            filas.append(["INTENTO ANTERIOR", materia.nombre, materia.grupo,
+                          cursada["nombre"], cursada["nota"], observacion])
 
     electivas = resultado["electivas"]
-    if electivas["pide"] or electivas["pide_hs"] or electivas["nombres"]:
-        for nombre in electivas["nombres"]:
-            filas.append(["APROBADA", "(actividad electiva)", "", nombre, "", ""])
+    if electivas["pide"] or electivas["pide_hs"] or electivas["aprobadas"] \
+            or electivas["otras"]:
+        for cursada in electivas["aprobadas"]:
+            filas.append(["APROBADA", "(actividad electiva)", "",
+                          cursada["nombre"], cursada["nota"],
+                          "Falta escribir el nombre de la actividad"
+                          if es_electiva_sin_nombre(cursada["nombre"]) else ""])
+        for cursada in electivas["otras"]:
+            filas.append(["REVISAR" if cursada["estado"] == REVISAR else "DESAPROBADA",
+                          "(actividad electiva)", "", cursada["nombre"],
+                          cursada["nota"], "No cuenta como aprobada"])
         for _ in range(resultado["faltan_electivas"]):
             filas.append(["FALTA", "(actividad electiva)", "", "", "",
                           "El plan pide %d" % electivas["pide"]])
