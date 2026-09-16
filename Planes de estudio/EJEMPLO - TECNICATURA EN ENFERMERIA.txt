@@ -1,13 +1,20 @@
 # ---------------------------------------------------------------------------
 # PLAN DE ESTUDIOS - ARCHIVO DE EJEMPLO
 # ---------------------------------------------------------------------------
-# Copiá este archivo, renombralo con el nombre de la carrera EXACTAMENTE como
-# figura en Datos!AZ3 del generador (por ejemplo "TECNICATURA SUPERIOR EN
-# ENFERMERIA.txt") y cargale las materias del plan.
+# Copiá este archivo, ponele el nombre que te resulte cómodo y cargale las
+# materias del plan. El nombre del archivo NO importa: la macro encuentra el
+# plan por la línea "CARRERA:", que tiene que decir lo mismo que Datos!AZ3.
+#
+# Si el plan lo tenés en PDF, no lo cargues a mano: usá la macro
+# ImportarPlanPDF, que te genera este mismo archivo ya lleno para revisar.
 #
 # Reglas del formato:
 #   * Un renglón por materia.
-#   * Lo que empieza con #  es un comentario (no se lee).
+#   * Lo que empieza con #  es un comentario (no se lee). También se puede
+#     dejar una nota al final de un renglón:  FISICA I   # ver correlativas
+#   * CARRERA: ...         con qué nombre se pide este plan (Datos!AZ3).
+#                          Se puede repetir para poner otras formas de
+#                          nombrar la misma carrera (siglas, el nombre viejo).
 #   * [Primer año]          es un título de grupo: solo sirve para el informe.
 #   * TITULO: ...           nombre lindo del plan (sale en el cartel).
 #   * ELECTIVAS: 2          cuántas actividades electivas pide el plan.
@@ -20,6 +27,9 @@
 # No hace falta poner tildes ni respetar mayúsculas: la comparación las ignora,
 # igual que los códigos del tipo "1A - " que trae el analítico.
 # ---------------------------------------------------------------------------
+
+CARRERA: Tecnicatura Superior en Enfermería
+CARRERA: TSE
 
 TITULO: Tecnicatura Superior en Enfermería (Res. 000/00)
 ELECTIVAS: 2

@@ -122,7 +122,22 @@ class MateriaPlan(object):
         return "MateriaPlan(%r)" % self.nombre
 
 
-_DIRECTIVA_RE = re.compile(r'^(TITULO|T[ÍI]TULO|ELECTIVAS)\s*:\s*(.*)$', re.IGNORECASE)
+_DIRECTIVA_RE = re.compile(r'^(CARRERA|TITULO|T[ÍI]TULO|ELECTIVAS)\s*:\s*(.*)$',
+                           re.IGNORECASE)
+
+# Comentario al final del renglón: "FISICA I   # ver correlativas"
+_COMENTARIO_AL_FINAL_RE = re.compile(r'\s+#.*$')
+
+
+def _leer_texto(ruta):
+    """Lee un archivo de texto probando las codificaciones de siempre."""
+    for codificacion in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            with open(ruta, "r", encoding=codificacion) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    raise IOError("No se pudo leer el archivo: %s" % ruta)
 
 
 def leer_plan(ruta):
@@ -131,6 +146,7 @@ def leer_plan(ruta):
     Formato (texto plano, un archivo por carrera):
 
         # lo que empieza con # es un comentario
+        CARRERA: Tecnicatura Superior en Enfermería
         TITULO: Tecnicatura Superior en Enfermería (Res. 123/15)
         ELECTIVAS: 2
 
@@ -141,19 +157,15 @@ def leer_plan(ruta):
 
     Lo que va después de "|" son nombres alternativos: sirve para cuando el
     analítico escribe la materia distinto que el plan.
-    """
-    texto = None
-    for codificacion in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            with open(ruta, "r", encoding=codificacion) as f:
-                texto = f.read()
-            break
-        except UnicodeDecodeError:
-            continue
-    if texto is None:
-        raise IOError("No se pudo leer el plan: %s" % ruta)
 
-    plan = {"ruta": ruta, "titulo": "", "electivas": 0, "materias": []}
+    "CARRERA:" es con lo que la macro encuentra este archivo: tiene que decir
+    lo mismo que Datos!AZ3. Se puede repetir para poner otras formas de
+    nombrarla. Si no está, se usa el nombre del archivo.
+    """
+    texto = _leer_texto(ruta)
+
+    plan = {"ruta": ruta, "titulo": "", "electivas": 0,
+            "carreras": [], "materias": []}
     grupo = ""
     for linea in texto.splitlines():
         linea = linea.strip()
@@ -168,11 +180,18 @@ def leer_plan(ruta):
         if directiva:
             clave = sin_tildes(directiva.group(1)).upper()
             valor = directiva.group(2).strip()
-            if clave == "TITULO":
+            if clave == "CARRERA":
+                if valor:
+                    plan["carreras"].append(valor)
+            elif clave == "TITULO":
                 plan["titulo"] = valor
             else:
                 numeros = re.search(r'\d+', valor)
                 plan["electivas"] = int(numeros.group()) if numeros else 0
+            continue
+
+        linea = _COMENTARIO_AL_FINAL_RE.sub("", linea).strip()
+        if not linea:
             continue
 
         obligatoria = True
@@ -189,7 +208,8 @@ def leer_plan(ruta):
                         orden=len(plan["materias"])))
 
     if not plan["titulo"]:
-        plan["titulo"] = os.path.splitext(os.path.basename(ruta))[0]
+        plan["titulo"] = plan["carreras"][0] if plan["carreras"] else \
+            os.path.splitext(os.path.basename(ruta))[0]
     return plan
 
 
@@ -233,11 +253,63 @@ def archivos_de_plan(carpetas):
     return archivos
 
 
+def claves_del_plan(ruta):
+    """Con qué nombres se puede pedir este plan.
+
+    Son las líneas "CARRERA:" del archivo (puede haber varias) y, además, el
+    nombre del archivo. Así no hace falta renombrar nada: alcanza con poner
+    adentro del plan la carrera tal como figura en Datos!AZ3.
+    """
+    claves = []
+    try:
+        for linea in _leer_texto(ruta).splitlines()[:80]:
+            linea = linea.strip()
+            if not linea or linea.startswith("#"):
+                continue
+            directiva = _DIRECTIVA_RE.match(linea)
+            if directiva and sin_tildes(directiva.group(1)).upper() == "CARRERA":
+                claves.append(normalizar(directiva.group(2)))
+    except (IOError, OSError):
+        pass
+    claves.append(normalizar(os.path.splitext(os.path.basename(ruta))[0]))
+    return [c for c in claves if c]
+
+
+def buscar_pdf_de_carrera(carrera, carpetas):
+    """Busca el PDF oficial del plan de esa carrera, por el nombre del archivo.
+
+    La macro no lee los PDF: esto es solo para poder avisar "está el PDF pero
+    todavía no lo importaste".
+    """
+    clave_carrera = normalizar(carrera)
+    if not clave_carrera:
+        return None
+    mejor, mejor_ratio = None, 0
+    for carpeta in carpetas:
+        try:
+            nombres = sorted(os.listdir(carpeta))
+        except OSError:
+            continue
+        for nombre in nombres:
+            if not nombre.lower().endswith(".pdf"):
+                continue
+            clave = normalizar(os.path.splitext(nombre)[0])
+            if not clave:
+                continue
+            if len(clave) >= 6 and (clave in clave_carrera or clave_carrera in clave):
+                ratio = 0.95
+            else:
+                ratio = parecido(clave, clave_carrera)
+            if ratio > mejor_ratio:
+                mejor, mejor_ratio = os.path.join(carpeta, nombre), ratio
+    return mejor if mejor_ratio >= 0.8 else None
+
+
 def buscar_plan_de_carrera(carrera, carpetas):
     """Elige el archivo de plan que corresponde a la carrera.
 
-    Devuelve (ruta, exactitud) o (None, 0). La exactitud es 1 cuando el nombre
-    del archivo coincide con la carrera y menos cuando es un parecido.
+    Devuelve (ruta, exactitud) o (None, 0). La exactitud es 1 cuando el plan
+    dice exactamente esa carrera y menos cuando es un parecido.
     """
     clave_carrera = normalizar(carrera)
     if not clave_carrera:
@@ -245,17 +317,18 @@ def buscar_plan_de_carrera(carrera, carpetas):
 
     mejor, mejor_ratio = None, 0
     for ruta in archivos_de_plan(carpetas):
-        clave_archivo = normalizar(os.path.splitext(os.path.basename(ruta))[0])
-        if not clave_archivo:
-            continue
-        if clave_archivo == clave_carrera:
-            return ruta, 1.0
-        if clave_carrera in clave_archivo or clave_archivo in clave_carrera:
-            ratio = 0.95
-        else:
-            ratio = parecido(clave_archivo, clave_carrera)
-        if ratio > mejor_ratio:
-            mejor, mejor_ratio = ruta, ratio
+        for clave in claves_del_plan(ruta):
+            if clave == clave_carrera:
+                return ruta, 1.0
+            # Uno contenido en el otro ("QUIMICA" dentro de "LICENCIATURA EN
+            # QUIMICA"). Se piden 6 letras para que una sigla corta no pegue
+            # de casualidad.
+            if len(clave) >= 6 and (clave in clave_carrera or clave_carrera in clave):
+                ratio = 0.95
+            else:
+                ratio = parecido(clave, clave_carrera)
+            if ratio > mejor_ratio:
+                mejor, mejor_ratio = ruta, ratio
 
     if mejor_ratio >= 0.8:
         return mejor, mejor_ratio
@@ -711,9 +784,15 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
     if ruta_plan is None:
         disponibles = [os.path.basename(a) for a in archivos_de_plan(carpetas)]
         texto = ("No encontré el plan de la carrera '%s'.\n\n"
-                 "Planes disponibles:\n%s\n\nElegilo a mano."
+                 "Planes cargados:\n%s\n"
                  % (carrera or "(Datos!AZ3 está vacía)",
                     "\n".join("   \u2022 " + d for d in disponibles) or "   (ninguno)"))
+        pdf = buscar_pdf_de_carrera(carrera, carpetas)
+        if pdf:
+            texto += ("\nEstá el PDF del plan ('%s') pero todavía no lo pasaste "
+                      "a texto: corré la macro ImportarPlanPDF, revisá el .txt "
+                      "que genera y volvé a chequear.\n" % os.path.basename(pdf))
+        texto += "\nMientras tanto, podés elegir el plan a mano."
         if not avisar or not avisar_si_no_hay_plan:
             return None
         _msgbox(texto, tipo="WARNINGBOX")

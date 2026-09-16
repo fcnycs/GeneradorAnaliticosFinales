@@ -8,9 +8,10 @@ Generador de Analíticos finales - Alumnos
 | `ExtraerDatos` | Lee el PDF del certificado analítico parcial y pega todo en la planilla (hojas `EDITOR`, `Datos` y `Extractor`). |
 | `GenerarAnalitico` | Arma el `.odt` final a partir del modelo y actualiza el `Listado`. |
 | `ChequearPlan.py` | Compara las materias del alumno con el plan de estudios de la carrera y avisa si le falta alguna. |
-| `pruebas_ChequearPlan.py` | Pruebas de la lógica del chequeo. Se corre con `python3 pruebas_ChequearPlan.py`, sin LibreOffice. |
+| `ImportarPlanPDF.py` | Pasa un plan de estudios en PDF a un borrador de texto, para no cargarlo a mano. |
+| `pruebas_ChequearPlan.py` | Pruebas del chequeo y del importador. Se corre con `python3 pruebas_ChequearPlan.py`, sin LibreOffice. |
 
-Los tres scripts van juntos en la carpeta de macros de usuario de LibreOffice,
+Los scripts van juntos en la carpeta de macros de usuario de LibreOffice,
 con extensión `.py`:
 
 * Linux: `~/.config/libreoffice/4/user/Scripts/python/`
@@ -31,15 +32,44 @@ materia en una hoja nueva llamada `Chequeo`.
 
 ### La carpeta de planes
 
-Una carpeta llamada `Planes de estudio` con **un archivo de texto por carrera**.
-Se busca al lado del `.ods` (y en la carpeta de arriba y en las de trabajo de
-siempre). El archivo se elige por su nombre, que tiene que parecerse al de la
-carrera que figura en `Datos!AZ3`; si no lo encuentra, abre el diálogo para
-elegirlo a mano.
+Una carpeta cuyo nombre empiece con `Planes` (sirve `PLANES DE ESTUDIO`), con
+**un archivo de texto por carrera**. Se busca al lado del `.ods`, en la carpeta
+de arriba y en las de trabajo de siempre.
+
+Los PDF de los planes pueden quedar en la misma carpeta: la macro **no los lee**,
+solo mira los `.txt`. Tampoco entra en las subcarpetas, así que una subcarpeta
+tipo `bak` sirve de "pendientes" sin molestar.
+
+```
+PLANES DE ESTUDIO/
+├── Plan-de-estudios-Geologia.pdf          <- el oficial, como respaldo
+├── Plan-de-estudios-Geologia.txt          <- este es el que usa la macro
+├── Plan-de-estudios-Geologia.crudo.txt    <- texto del PDF, por si hace falta
+└── bak/                                   <- los que todavía no revisaste
+```
+
+### Cargar un plan nuevo (desde el PDF)
+
+1. **Herramientas → Macros → Ejecutar macro → Mis macros → ImportarPlanPDF**, y
+   elegí el o los PDF (se pueden marcar varios de una).
+2. Deja un `.txt` al lado de cada PDF, con las materias que detectó.
+3. **Abrilo y revisalo una vez.** Es un borrador: puede colarse un renglón de
+   más o faltar alguno. Al final del archivo quedan comentados los renglones
+   que descartó, por si alguno era una materia.
+4. Sobre todo, dejá la línea `CARRERA:` diciendo lo mismo que `Datos!AZ3`, y
+   completá `ELECTIVAS:` si el plan pide actividades electivas.
+
+Hecho eso, esa carrera queda lista para siempre (salvo que cambie el plan).
+
+**No hace falta renombrar los PDF:** el plan se encuentra por la línea
+`CARRERA:` del `.txt`, no por el nombre del archivo. Igual, un nombre
+descriptivo ayuda a encontrarlo a ojo.
 
 ### Formato del plan
 
 ```
+CARRERA: Tecnicatura Superior en Enfermería
+CARRERA: TSE
 TITULO: Tecnicatura Superior en Enfermería (Res. 000/00)
 ELECTIVAS: 2
 
@@ -49,8 +79,13 @@ ENFERMERIA BASICA
 ? SEMINARIO DE INGLES
 ```
 
-* `#` al principio del renglón = comentario.
+* `CARRERA: ...` = con qué nombre se pide este plan; tiene que decir lo mismo
+  que `Datos!AZ3`. Se puede repetir (siglas, el nombre viejo de la carrera). Si
+  no está, se usa el nombre del archivo.
+* `#` al principio del renglón = comentario. También sirve al final de un
+  renglón: `FISICA I   # ver correlativas`.
 * `[...]` = título de grupo (año). Solo sale en el informe.
+* `TITULO: ...` = el nombre que aparece en el cartel.
 * `ELECTIVAS: N` = cuántas actividades electivas pide el plan.
 * `MATERIA | OTRO NOMBRE` = nombres alternativos, para cuando el analítico la
   escribe distinto que el plan.

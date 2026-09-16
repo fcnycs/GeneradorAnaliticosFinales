@@ -1,4 +1,4 @@
-"""Pruebas de la lógica de ChequearPlan.py (no necesita LibreOffice).
+"""Pruebas de ChequearPlan.py y ImportarPlanPDF.py (no necesitan LibreOffice).
 
     python3 pruebas_ChequearPlan.py
 """
@@ -6,6 +6,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ChequearPlan as C
+import ImportarPlanPDF as I
 
 PLAN_EJEMPLO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "Planes de estudio",
@@ -77,6 +78,63 @@ filas = C.armar_detalle(C.comparar(p, C.armar_cursadas([("PARASITOLOGIA", "7"), 
 chk(filas[0] == C.ENCABEZADO_INFORME, "encabezado")
 chk(len(filas) == 1 + 15 + 2 + 1, "filas del detalle: %d" % len(filas))
 chk(all(len(f) == len(C.ENCABEZADO_INFORME) for f in filas), "ancho parejo de filas")
+
+# --- CARRERA: encuentra el plan sin importar el nombre del archivo ---------
+import tempfile
+carpeta = tempfile.mkdtemp()
+with open(os.path.join(carpeta, "TUQ.txt"), "w", encoding="utf-8") as f:
+    f.write("CARRERA: Tecnicatura Universitaria en Química\n"
+            "CARRERA: TUQ\n"
+            "MATEMATICA I   # nota al final del renglón\n")
+ruta, exactitud = C.buscar_plan_de_carrera("TECNICATURA UNIVERSITARIA EN QUIMICA", [carpeta])
+chk(ruta is not None and exactitud == 1.0, "plan por CARRERA: %s" % ruta)
+ruta, _ = C.buscar_plan_de_carrera("TUQ", [carpeta])
+chk(ruta is not None, "plan por sigla")
+p = C.leer_plan(os.path.join(carpeta, "TUQ.txt"))
+chk(p["carreras"] == ["Tecnicatura Universitaria en Química", "TUQ"], p["carreras"])
+chk(len(p["materias"]) == 1 and p["materias"][0].nombre == "MATEMATICA I",
+    "comentario al final: %s" % [m.nombre for m in p["materias"]])
+chk(p["titulo"] == "Tecnicatura Universitaria en Química", "titulo por defecto")
+
+# --- importador: renglones tipicos de un plan en PDF ----------------------
+chk(I.limpiar_renglon("1 ANATOMÍA Y FISIOLOGÍA 1º Cuatr. 6 hs. sem. -") == "ANATOMÍA Y FISIOLOGÍA", "horas y regimen")
+chk(I.limpiar_renglon("Q3 QUÍMICA BIOLÓGICA 2°C 96 hs 5, 6") == "QUÍMICA BIOLÓGICA", "codigo y correlativas")
+chk(I.limpiar_renglon("12) Práctica Profesional Supervisada 200 hs") == "Práctica Profesional Supervisada", "PPS es materia")
+chk(I.limpiar_renglon("TOTAL 2800") == "", "total no es materia")
+chk(I.limpiar_renglon("Res. C.S. 461/17") == "", "resolucion no es materia")
+chk(I.es_basura("El alumno deberá acreditar un idioma extranjero"), "requisito no es materia")
+chk(I.es_encabezado_de_grupo("PRIMER AÑO") == "PRIMER AÑO", "encabezado conserva la Ñ")
+chk(I.es_encabezado_de_grupo("QUÍMICA I") is None, "una materia no es encabezado")
+chk(I.carrera_sugerida("Plan-de-estudios-Licenciatura-en-Quimica.pdf") == "Licenciatura en Quimica",
+    I.carrera_sugerida("Plan-de-estudios-Licenciatura-en-Quimica.pdf"))
+
+# --- el borrador que genera el importador lo tiene que poder leer el chequeo ---
+lineas = """UNIVERSIDAD NACIONAL DE LA PATAGONIA
+PLAN DE ESTUDIOS - LICENCIATURA EN QUÍMICA
+Código Asignatura Régimen Carga horaria Correlativas
+PRIMER AÑO
+1 MATEMÁTICA I Anual 128 hs -
+2 QUÍMICA GENERAL E INORGÁNICA Anual 160 hs -
+SEGUNDO AÑO
+3 QUÍMICA ORGÁNICA I 2°C 128 hs (2)
+Página 1 de 4""".splitlines()
+grupos, descartadas = I.parsear_lineas(lineas)
+chk([t for t, _ in grupos] == ["PRIMER AÑO", "SEGUNDO AÑO"], [t for t, _ in grupos])
+chk(sum(len(m) for _, m in grupos) == 3, "materias detectadas")
+borrador = I.armar_borrador(grupos, descartadas, "Licenciatura en Química", "x.pdf")
+destino = os.path.join(carpeta, "borrador.txt")
+with open(destino, "w", encoding="utf-8") as f:
+    f.write(borrador)
+p = C.leer_plan(destino)
+chk([m.nombre for m in p["materias"]] == ["MATEMÁTICA I", "QUÍMICA GENERAL E INORGÁNICA", "QUÍMICA ORGÁNICA I"],
+    [m.nombre for m in p["materias"]])
+chk(p["carreras"] == ["Licenciatura en Química"], "CARRERA en el borrador")
+chk(p["materias"][0].grupo == "PRIMER AÑO", "grupo del borrador")
+r = C.comparar(p, C.armar_cursadas([("MATEMATICA I", "7 (SIETE)"),
+                                    ("QUIMICA GENERAL E INORGANICA", "8"),
+                                    ("QUIMICA ORGANICA I", "Aprobado")]))
+chk(r["ok"] and not r["aproximadas"], "el borrador sirve para chequear: %s" % r["faltantes"])
+
 
 print("Fallas: %d" % len(errores))
 for e in errores:
