@@ -28,7 +28,28 @@ Responde una sola pregunta: **¿a este alumno le falta alguna materia?**
   no está cargado el plan de esa carrera, no dice nada y sigue de largo.
 
 Al terminar muestra un cartel con el resultado y deja el detalle materia por
-materia en una hoja nueva llamada `Chequeo`.
+materia en una hoja nueva llamada `Chequeo`, encabezada con la fecha y el
+alumno.
+
+**No hace falta limpiarla entre alumno y alumno:** cada chequeo borra la hoja y
+la escribe de nuevo, así que nunca quedan renglones del anterior. Para dejarla
+en blanco al terminar hay dos opciones:
+
+* la macro `LimpiarChequeo` (Herramientas → Macros, o un botón);
+* agregar esto al final de tu macro `LIMPIAR`, así se limpia junto con el resto:
+
+```basic
+If ThisComponent.Sheets.hasByName("Chequeo") Then
+    oHoja = ThisComponent.Sheets.getByName("Chequeo")
+    oCur = oHoja.createCursor()
+    oCur.gotoEndOfUsedArea(False)
+    oHoja.getCellRangeByPosition(0, 0, oCur.RangeAddress.EndColumn, _
+        oCur.RangeAddress.EndRow).clearContents(1 + 2 + 4 + 16)
+End If
+```
+
+Si preferís que la hoja desaparezca del todo, `ThisComponent.Sheets.removeByName("Chequeo")`:
+el chequeo siguiente la vuelve a crear.
 
 ### Planes ya cargados
 

@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import unicodedata
+from datetime import datetime
 from difflib import SequenceMatcher
 
 # ---------------------------------------------------------------------------
@@ -968,20 +969,46 @@ def leer_filas_editor(doc):
     return filas
 
 
-def escribir_informe(doc, filas, resumen):
+# Qué se borra al limpiar: valores, fechas, texto y fórmulas.
+# (com.sun.star.sheet.CellFlags: VALUE 1 + DATETIME 2 + STRING 4 + FORMULA 16)
+BORRAR_CONTENIDO = 1 + 2 + 4 + 16
+
+
+def vaciar_hoja_informe(hoja):
+    """Borra todo lo escrito en la hoja del chequeo anterior.
+
+    Se mira el área realmente usada, así no queda nada colgado del informe de
+    otro alumno aunque el anterior haya sido más largo que éste.
+    """
+    try:
+        cursor = hoja.createCursor()
+        cursor.gotoEndOfUsedArea(False)
+        direccion = cursor.getRangeAddress()
+        ultima_fila, ultima_col = direccion.EndRow, direccion.EndColumn
+    except Exception:
+        ultima_fila, ultima_col = ULTIMA_FILA_DATOS + 40, len(ENCABEZADO_INFORME) - 1
+
+    if ultima_fila < 0 or ultima_col < 0:
+        return
+    hoja.getCellRangeByPosition(0, 0, ultima_col, ultima_fila).clearContents(
+        BORRAR_CONTENIDO)
+
+
+def escribir_informe(doc, filas, resumen, encabezado=""):
     """Deja el detalle en la hoja de informe (la crea si no está)."""
     hojas = doc.getSheets()
     if not hojas.hasByName(NOMBRE_HOJA_INFORME):
         hojas.insertNewByName(NOMBRE_HOJA_INFORME, hojas.getCount())
     hoja = hojas.getByName(NOMBRE_HOJA_INFORME)
 
-    # Limpiar lo del chequeo anterior
-    ancho = len(ENCABEZADO_INFORME)
-    hoja.getCellRangeByPosition(0, 0, ancho - 1, ULTIMA_FILA_DATOS + 40).setDataArray(
-        tuple(tuple("" for _ in range(ancho)) for _ in range(ULTIMA_FILA_DATOS + 41)))
+    vaciar_hoja_informe(hoja)
 
-    cuerpo = [[resumen.replace("\n", " ").replace("\u2022", "-")] + [""] * (ancho - 1),
-              [""] * ancho] + [list(f) for f in filas]
+    ancho = len(ENCABEZADO_INFORME)
+    cuerpo = []
+    if encabezado:
+        cuerpo.append([encabezado] + [""] * (ancho - 1))
+    cuerpo += [[resumen.replace("\n", " ").replace("\u2022", "-")] + [""] * (ancho - 1),
+               [""] * ancho] + [list(f) for f in filas]
     hoja.getCellRangeByPosition(0, 0, ancho - 1, len(cuerpo) - 1).setDataArray(
         tuple(tuple(c for c in fila) for fila in cuerpo))
 
@@ -1094,8 +1121,12 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
                  % (os.path.basename(ruta_plan), carrera))
     resumen_completo = resumen + ("\n\n(Materias leídas de la hoja '%s'.)" % hoja_usada) + aviso
 
+    encabezado = "Chequeo del %s \u2013 %s%s" % (
+        datetime.now().strftime("%d/%m/%Y %H:%M"),
+        alumno or "(sin nombre)",
+        " \u2013 %s" % carrera if carrera else "")
     try:
-        escribir_informe(doc, armar_detalle(resultado), resumen)
+        escribir_informe(doc, armar_detalle(resultado), resumen, encabezado)
     except Exception as e:
         resumen_completo += "\n\n(No pude escribir la hoja de detalle: %s)" % e
 
@@ -1114,7 +1145,27 @@ def ChequearPlan(*args):
     chequear_documento(doc)
 
 
-g_exportedScripts = (ChequearPlan,)
+def LimpiarChequeo(*args):
+    """Botón / macro: deja la hoja 'Chequeo' en blanco.
+
+    No hace falta correrla para chequear otro alumno (el informe se reescribe
+    entero cada vez); es para dejar la planilla limpia al terminar.
+    """
+    doc = _documento_actual()
+    if doc is None or not hasattr(doc, "getSheets"):
+        _msgbox("Abrí el generador (.ods) y probá de nuevo.", tipo="ERRORBOX")
+        return
+
+    hojas = doc.getSheets()
+    if not hojas.hasByName(NOMBRE_HOJA_INFORME):
+        _msgbox("No hay ninguna hoja '%s' para limpiar." % NOMBRE_HOJA_INFORME)
+        return
+
+    vaciar_hoja_informe(hojas.getByName(NOMBRE_HOJA_INFORME))
+    _msgbox("La hoja '%s' quedó vacía." % NOMBRE_HOJA_INFORME)
+
+
+g_exportedScripts = (ChequearPlan, LimpiarChequeo)
 
 
 # ---------------------------------------------------------------------------

@@ -231,6 +231,102 @@ r = C.comparar(enf, C.armar_cursadas(
 chk(r["ok"] and not r["aproximadas"], "materno-infantil con guion pegado")
 
 
+# --- la hoja "Chequeo" se reescribe entera (doble de prueba de LibreOffice) ---
+class _Direccion:
+    def __init__(self, fila, col):
+        self.EndRow, self.EndColumn = fila, col
+
+
+class _Cursor:
+    def __init__(self, hoja):
+        self.hoja = hoja
+
+    def gotoEndOfUsedArea(self, expandir):
+        pass
+
+    def getRangeAddress(self):
+        if not self.hoja.celdas:
+            return _Direccion(-1, -1)
+        return _Direccion(max(f for f, _ in self.hoja.celdas),
+                          max(c for _, c in self.hoja.celdas))
+
+
+class _Rango:
+    def __init__(self, hoja, c1, f1, c2, f2):
+        self.hoja, self.c1, self.f1, self.c2, self.f2 = hoja, c1, f1, c2, f2
+
+    def setDataArray(self, datos):
+        for i, fila in enumerate(datos):
+            for j, valor in enumerate(fila):
+                if valor == "":
+                    self.hoja.celdas.pop((self.f1 + i, self.c1 + j), None)
+                else:
+                    self.hoja.celdas[(self.f1 + i, self.c1 + j)] = valor
+
+    def clearContents(self, flags):
+        for f in range(self.f1, self.f2 + 1):
+            for c in range(self.c1, self.c2 + 1):
+                self.hoja.celdas.pop((f, c), None)
+
+
+class _Hoja:
+    def __init__(self):
+        self.celdas = {}
+
+    def createCursor(self):
+        return _Cursor(self)
+
+    def getCellRangeByPosition(self, c1, f1, c2, f2):
+        return _Rango(self, c1, f1, c2, f2)
+
+
+class _Hojas:
+    def __init__(self):
+        self.hojas = {}
+
+    def hasByName(self, n):
+        return n in self.hojas
+
+    def getByName(self, n):
+        return self.hojas[n]
+
+    def insertNewByName(self, n, pos):
+        self.hojas[n] = _Hoja()
+
+    def getCount(self):
+        return len(self.hojas)
+
+
+class _Doc:
+    def __init__(self):
+        self.hojas = _Hojas()
+
+    def getSheets(self):
+        return self.hojas
+
+
+doc = _Doc()
+largo = [["FALTA", "MATERIA %d" % n, "", "", "", ""] for n in range(40)]
+C.escribir_informe(doc, [C.ENCABEZADO_INFORME] + largo, "informe largo", "Chequeo de A")
+hoja = doc.getSheets().getByName(C.NOMBRE_HOJA_INFORME)
+chk(hoja.celdas[(0, 0)] == "Chequeo de A", hoja.celdas.get((0, 0)))
+chk(hoja.celdas[(1, 0)] == "informe largo", hoja.celdas.get((1, 0)))
+filas_largo = max(f for f, _ in hoja.celdas)
+
+# el informe siguiente es más corto: no puede quedar nada del anterior
+C.escribir_informe(doc, [C.ENCABEZADO_INFORME, ["APROBADA", "UNA", "", "", "", ""]],
+                   "informe corto", "Chequeo de B")
+chk(hoja.celdas[(0, 0)] == "Chequeo de B", hoja.celdas.get((0, 0)))
+chk(max(f for f, _ in hoja.celdas) < filas_largo, "quedaron restos del informe anterior")
+chk(not any("MATERIA" in str(v) for v in hoja.celdas.values()), "restos del anterior")
+
+# y limpiarla la deja en blanco
+C.vaciar_hoja_informe(hoja)
+chk(hoja.celdas == {}, "la hoja no quedó vacía: %s" % hoja.celdas)
+C.vaciar_hoja_informe(hoja)          # sobre una hoja vacía no explota
+chk(hoja.celdas == {}, "vaciar dos veces")
+
+
 print("Fallas: %d" % len(errores))
 for e in errores:
     print("  -", e)
