@@ -154,6 +154,18 @@ filas_editor = [("ENFERMERIA BASICA", "170"),
                 ("ACTIVIDAD ELECTIVA: TALLER DE RCP", "60"),
                 ("ACTIVIDAD ELECTIVA: INFORMATICA", "35")]
 chk(C.sumar_horas_electivas(filas_editor) == (95.0, 2), C.sumar_horas_electivas(filas_editor))
+# una electiva desaprobada o ausente no suma horas
+con_nota = [("ACTIVIDAD ELECTIVA: TALLER DE RCP", "60", "8 (OCHO)"),
+            ("ACTIVIDAD ELECTIVA: INFORMATICA", "35", "AUSENTE"),
+            ("ACTIVIDAD ELECTIVA: INGLES", "35", "2 (DOS)")]
+chk(C.sumar_horas_electivas(con_nota) == (60.0, 1), C.sumar_horas_electivas(con_nota))
+# si no está la columna de notas, se cuentan igual
+chk(C.sumar_horas_electivas([(a, h) for a, h, _ in con_nota]) == (130.0, 3),
+    "sin columna de notas")
+chk(C.columna_por_encabezado(["", "", "", "", "ASIGNATURAS", "Hs,", "FECHA", "CALIFICACIÓN"],
+                             C.PREFIJOS_NOTA, None) == 7, "detectar CALIFICACIÓN")
+chk(C.columna_por_encabezado(["", "", "", "", "ASIGNATURAS", "Hs,", "FECHA"],
+                             C.PREFIJOS_HS, 99) == 5, "detectar Hs.")
 
 plan_hs = {"titulo": "X", "electivas": 0, "electivas_hs": 95, "materias": []}
 cursadas_hs = C.armar_cursadas([("ACTIVIDAD ELECTIVA: TALLER DE RCP", "8")])

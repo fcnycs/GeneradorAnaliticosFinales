@@ -69,6 +69,8 @@ FILA_ENCABEZADO_EDITOR = 16   # EDITOR!17: "ASIGNATURAS | Hs. | FECHA | ..."
 PRIMERA_FILA_EDITOR = 17      # EDITOR!18
 COL_ASIGNATURA_EDITOR = 4     # EDITOR!E
 COL_HS_EDITOR = 5             # EDITOR!F (igual se intenta detectar sola)
+PREFIJOS_HS = ("HS", "HORAS", "CARGA")
+PREFIJOS_NOTA = ("CALIFICACION", "NOTA")
 
 CELDA_CARRERA = (HOJA_DATOS, "AZ3")
 CELDA_GENERO = (HOJA_DATOS, "V4")      # "el Sr. " / "la Srta. "
@@ -414,12 +416,18 @@ def horas_de(texto):
 def sumar_horas_electivas(filas_editor):
     """Suma las horas de las filas que son actividades electivas.
 
-    filas_editor es [(asignatura, horas)] leído de la hoja EDITOR. Devuelve
-    (horas, cuántas filas). Si no hay ninguna electiva, (0.0, 0).
+    filas_editor es [(asignatura, horas)] o [(asignatura, horas, nota)] leído
+    de la hoja EDITOR. Una electiva desaprobada o ausente no suma; si no se
+    sabe la nota (no está esa columna), se cuenta igual.
+    Devuelve (horas, cuántas).
     """
     total, cuantas = 0.0, 0
-    for asignatura, horas in filas_editor:
+    for fila in filas_editor:
+        asignatura, horas = fila[0], fila[1]
+        nota = fila[2] if len(fila) > 2 else ""
         if not es_actividad_electiva(asignatura):
+            continue
+        if nota and estado_de_la_nota(nota) == DESAPROBADA:
             continue
         cuantas += 1
         total += horas_de(horas)
@@ -810,27 +818,37 @@ def leer_materias_del_documento(doc):
     return [], ""
 
 
-def _columna_de_horas(hoja):
-    """Busca la columna 'Hs.' en el encabezado del EDITOR."""
-    for c in range(COL_ASIGNATURA_EDITOR, COL_ASIGNATURA_EDITOR + 8):
-        try:
-            titulo = normalizar(hoja.getCellByPosition(
-                c, FILA_ENCABEZADO_EDITOR).getString())
-        except Exception:
-            break
-        if titulo.startswith("HS") or titulo.startswith("HORAS") \
-                or titulo.startswith("CARGA"):
+def columna_por_encabezado(encabezados, prefijos, por_defecto):
+    """Busca en el encabezado del EDITOR la columna que empieza con alguno de
+    esos prefijos ('Hs.', 'CALIFICACIÓN'). Solo mira de las asignaturas a la
+    derecha, para no confundirse con la parte de arriba de la hoja."""
+    for c in range(COL_ASIGNATURA_EDITOR, len(encabezados)):
+        titulo = normalizar(encabezados[c])
+        if titulo and any(titulo.startswith(p) for p in prefijos):
             return c
-    return COL_HS_EDITOR
+    return por_defecto
 
 
 def leer_filas_editor(doc):
-    """(asignatura, horas) de la hoja EDITOR, para las horas de las electivas."""
+    """(asignatura, horas, nota) de la hoja EDITOR: de ahí salen las horas de
+    las actividades electivas, que la tabla de 'Datos' no arrastra."""
     hojas = doc.getSheets()
     if not hojas.hasByName(HOJA_EDITOR):
         return []
     hoja = hojas.getByName(HOJA_EDITOR)
-    col_hs = _columna_de_horas(hoja)
+
+    encabezados = [hoja.getCellByPosition(c, FILA_ENCABEZADO_EDITOR).getString()
+                   for c in range(COL_ASIGNATURA_EDITOR + 12)]
+    col_hs = columna_por_encabezado(encabezados, PREFIJOS_HS, COL_HS_EDITOR)
+    col_nota = columna_por_encabezado(encabezados, PREFIJOS_NOTA, None)
+
+    def texto(c, f):
+        celda = hoja.getCellByPosition(c, f)
+        t = celda.getString().strip()
+        if not t:
+            valor = celda.getValue()
+            t = str(valor) if valor else ""
+        return t
 
     filas, vacias = [], 0
     for f in range(PRIMERA_FILA_EDITOR, ULTIMA_FILA_DATOS):
@@ -841,12 +859,8 @@ def leer_filas_editor(doc):
                 break
             continue
         vacias = 0
-        celda = hoja.getCellByPosition(col_hs, f)
-        horas = celda.getString().strip()
-        if not horas:
-            valor = celda.getValue()
-            horas = str(valor) if valor else ""
-        filas.append((nombre, horas))
+        filas.append((nombre, texto(col_hs, f),
+                      texto(col_nota, f) if col_nota is not None else ""))
     return filas
 
 
@@ -1069,10 +1083,16 @@ def leer_materias_de_ods(ruta_ods, hojas=None):
 
 
 def leer_filas_editor_de_ods(hojas):
-    """(asignatura, horas) de la hoja EDITOR de un .ods guardado."""
+    """(asignatura, horas, nota) de la hoja EDITOR de un .ods guardado."""
     grilla = hojas.get(HOJA_EDITOR)
     if not grilla:
         return []
+
+    encabezados = [_celda_de_grilla(grilla, FILA_ENCABEZADO_EDITOR, c)
+                   for c in range(COL_ASIGNATURA_EDITOR + 12)]
+    col_hs = columna_por_encabezado(encabezados, PREFIJOS_HS, COL_HS_EDITOR)
+    col_nota = columna_por_encabezado(encabezados, PREFIJOS_NOTA, None)
+
     filas, vacias = [], 0
     for f in range(PRIMERA_FILA_EDITOR, min(len(grilla), ULTIMA_FILA_DATOS)):
         nombre = _celda_de_grilla(grilla, f, COL_ASIGNATURA_EDITOR)
@@ -1082,7 +1102,9 @@ def leer_filas_editor_de_ods(hojas):
                 break
             continue
         vacias = 0
-        filas.append((nombre, _celda_de_grilla(grilla, f, COL_HS_EDITOR)))
+        filas.append((nombre, _celda_de_grilla(grilla, f, col_hs),
+                      _celda_de_grilla(grilla, f, col_nota)
+                      if col_nota is not None else ""))
     return filas
 
 
