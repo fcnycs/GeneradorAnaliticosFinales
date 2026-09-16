@@ -62,6 +62,14 @@ HOJA_EXTRACTOR = "Extractor"
 COL_NOMBRE_EXTRACTOR = 0      # Extractor!A = actividad
 COL_NOTA_EXTRACTOR = 2        # Extractor!C = nota
 
+# Las horas de las actividades electivas están en la hoja EDITOR, que es la
+# única que las tiene (la tabla de "Datos" no arrastra la columna Hs.).
+HOJA_EDITOR = "EDITOR"
+FILA_ENCABEZADO_EDITOR = 16   # EDITOR!17: "ASIGNATURAS | Hs. | FECHA | ..."
+PRIMERA_FILA_EDITOR = 17      # EDITOR!18
+COL_ASIGNATURA_EDITOR = 4     # EDITOR!E
+COL_HS_EDITOR = 5             # EDITOR!F (igual se intenta detectar sola)
+
 CELDA_CARRERA = (HOJA_DATOS, "AZ3")
 CELDA_GENERO = (HOJA_DATOS, "V4")      # "el Sr. " / "la Srta. "
 CELDA_APELLIDO = ("EDITOR", "R4")
@@ -103,6 +111,17 @@ def parecido(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _ref_a_columna_fila(ref):
+    """'V4' -> (21, 3): columna y fila, contando desde 0."""
+    m = re.match(r'([A-Za-z]+)(\d+)', ref or "")
+    if not m:
+        return 0, 0
+    columna = 0
+    for letra in m.group(1).upper():
+        columna = columna * 26 + (ord(letra) - 64)
+    return columna - 1, int(m.group(2)) - 1
+
+
 # ---------------------------------------------------------------------------
 # LECTURA DEL PLAN DE ESTUDIOS
 # ---------------------------------------------------------------------------
@@ -122,8 +141,9 @@ class MateriaPlan(object):
         return "MateriaPlan(%r)" % self.nombre
 
 
-_DIRECTIVA_RE = re.compile(r'^(CARRERA|TITULO|T[ÍI]TULO|ELECTIVAS)\s*:\s*(.*)$',
-                           re.IGNORECASE)
+_DIRECTIVA_RE = re.compile(
+    r'^(CARRERA|TITULO|T[ÍI]TULO|ELECTIVAS|ELECTIVAS[ _]HS|HORAS[ _]ELECTIVAS)'
+    r'\s*:\s*(.*)$', re.IGNORECASE)
 
 # Comentario al final del renglón: "FISICA I   # ver correlativas"
 _COMENTARIO_AL_FINAL_RE = re.compile(r'\s+#.*$')
@@ -148,7 +168,8 @@ def leer_plan(ruta):
         # lo que empieza con # es un comentario
         CARRERA: Tecnicatura Superior en Enfermería
         TITULO: Tecnicatura Superior en Enfermería (Res. 123/15)
-        ELECTIVAS: 2
+        ELECTIVAS: 2            <- cuántas actividades electivas pide
+        ELECTIVAS_HS: 95        <- o cuántas horas, si el plan las pide así
 
         [Primer año]
         ANATOMIA Y FISIOLOGIA | ANATOMOFISIOLOGIA
@@ -164,7 +185,7 @@ def leer_plan(ruta):
     """
     texto = _leer_texto(ruta)
 
-    plan = {"ruta": ruta, "titulo": "", "electivas": 0,
+    plan = {"ruta": ruta, "titulo": "", "electivas": 0, "electivas_hs": 0,
             "carreras": [], "materias": []}
     grupo = ""
     for linea in texto.splitlines():
@@ -187,7 +208,11 @@ def leer_plan(ruta):
                 plan["titulo"] = valor
             else:
                 numeros = re.search(r'\d+', valor)
-                plan["electivas"] = int(numeros.group()) if numeros else 0
+                cantidad = int(numeros.group()) if numeros else 0
+                if clave == "ELECTIVAS":
+                    plan["electivas"] = cantidad
+                else:                      # ELECTIVAS_HS / HORAS_ELECTIVAS
+                    plan["electivas_hs"] = cantidad
             continue
 
         linea = _COMENTARIO_AL_FINAL_RE.sub("", linea).strip()
@@ -379,6 +404,28 @@ def es_actividad_electiva(nombre):
     return clave.startswith("ACTIVIDAD ELECTIVA") or clave.startswith("ELECTIVA")
 
 
+def horas_de(texto):
+    """Saca el número de horas de una celda: '95', '95 hs', '95,5'."""
+    t = (texto or "").replace(",", ".").strip()
+    m = re.search(r'\d+(?:\.\d+)?', t)
+    return float(m.group()) if m else 0.0
+
+
+def sumar_horas_electivas(filas_editor):
+    """Suma las horas de las filas que son actividades electivas.
+
+    filas_editor es [(asignatura, horas)] leído de la hoja EDITOR. Devuelve
+    (horas, cuántas filas). Si no hay ninguna electiva, (0.0, 0).
+    """
+    total, cuantas = 0.0, 0
+    for asignatura, horas in filas_editor:
+        if not es_actividad_electiva(asignatura):
+            continue
+        cuantas += 1
+        total += horas_de(horas)
+    return total, cuantas
+
+
 def armar_cursadas(filas):
     """De [(nombre, nota)] a la lista de materias del alumno, ya clasificadas."""
     cursadas = []
@@ -401,8 +448,13 @@ def armar_cursadas(filas):
 # COMPARACIÓN
 # ---------------------------------------------------------------------------
 
-def comparar(plan, cursadas):
+def comparar(plan, cursadas, horas_electivas=None):
     """Cruza el plan con lo que rindió el alumno.
+
+    horas_electivas es lo que suma la columna Hs. del EDITOR, para los planes
+    que piden las electivas por carga horaria (ELECTIVAS_HS) en vez de por
+    cantidad. Si no se pudo leer, va None y el chequeo lo informa en vez de
+    dar por faltante algo que no sabe.
 
     Para cada materia del plan busca primero el nombre igual (o alguno de sus
     alias) y, si no aparece, el nombre más parecido. Cuando una materia figura
@@ -472,7 +524,9 @@ def comparar(plan, cursadas):
         "sin_nota": [],           # figuran, pero no se entiende la calificación
         "optativas_faltantes": [],
         "fuera_del_plan": [],
-        "electivas": {"pide": plan.get("electivas", 0), "tiene": 0, "nombres": []},
+        "electivas": {"pide": plan.get("electivas", 0),
+                      "pide_hs": plan.get("electivas_hs", 0),
+                      "tiene": 0, "horas": horas_electivas, "nombres": []},
     }
 
     for n, materia in enumerate(plan["materias"]):
@@ -505,10 +559,23 @@ def comparar(plan, cursadas):
 
     electivas = resultado["electivas"]
     resultado["faltan_electivas"] = max(0, electivas["pide"] - electivas["tiene"])
+
+    # Electivas por carga horaria. Si el plan las pide y no se pudieron leer
+    # las horas, no se cuenta como que falten: se avisa para que lo mires.
+    resultado["faltan_horas_electivas"] = 0
+    resultado["horas_electivas_sin_leer"] = False
+    if electivas["pide_hs"]:
+        if horas_electivas:
+            resultado["faltan_horas_electivas"] = max(
+                0, electivas["pide_hs"] - horas_electivas)
+        else:
+            resultado["horas_electivas_sin_leer"] = True
+
     resultado["ok"] = (not resultado["faltantes"]
                        and not resultado["pendientes"]
                        and not resultado["sin_nota"]
-                       and resultado["faltan_electivas"] == 0)
+                       and resultado["faltan_electivas"] == 0
+                       and resultado["faltan_horas_electivas"] == 0)
     return resultado
 
 
@@ -542,7 +609,10 @@ def armar_resumen(alumno, resultado, femenino=False):
     if resultado["ok"]:
         detalle = ("tiene aprobadas las %s obligatorias del plan"
                    % _plural(obligatorias, "materia", "materias"))
-        if electivas["pide"]:
+        if electivas["pide_hs"]:
+            detalle += (" y %g hs de actividades electivas (el plan pide %g)"
+                        % (electivas["horas"] or 0, electivas["pide_hs"]))
+        elif electivas["pide"]:
             detalle += (" y %s" % _plural(electivas["tiene"], "actividad electiva",
                                           "actividades electivas"))
         partes.append("%s está %s y no le faltan materias:\n%s."
@@ -558,16 +628,26 @@ def armar_resumen(alumno, resultado, femenino=False):
         if resultado["faltan_electivas"]:
             pedazos.append(_plural(resultado["faltan_electivas"],
                                    "actividad electiva", "actividades electivas"))
+        if resultado["faltan_horas_electivas"]:
+            pedazos.append("%g hs de actividades electivas"
+                           % resultado["faltan_horas_electivas"])
         if resultado["sin_nota"]:
             pedazos.append("%d sin calificación clara" % len(resultado["sin_nota"]))
         partes.append("A %s le falta%s: %s."
                       % (quien, "" if len(pedazos) == 1 else "n", ", ".join(pedazos)))
+
+    if resultado["horas_electivas_sin_leer"]:
+        partes.append("OJO: el plan pide %g hs de actividades electivas y no pude "
+                      "leer la columna Hs. del EDITOR. Revisalo a mano."
+                      % electivas["pide_hs"])
 
     resumen_plan = "Plan: %s\n(%d materias" % (plan["titulo"], total)
     if obligatorias != total:
         resumen_plan += ", %d obligatorias" % obligatorias
     if electivas["pide"]:
         resumen_plan += ", %d electivas" % electivas["pide"]
+    if electivas["pide_hs"]:
+        resumen_plan += ", %g hs de electivas" % electivas["pide_hs"]
     partes.append(resumen_plan + ")")
 
     if resultado["faltantes"]:
@@ -624,12 +704,24 @@ def armar_detalle(resultado):
                       cursada["nombre"], cursada["nota"], observacion])
 
     electivas = resultado["electivas"]
-    if electivas["pide"] or electivas["nombres"]:
+    if electivas["pide"] or electivas["pide_hs"] or electivas["nombres"]:
         for nombre in electivas["nombres"]:
             filas.append(["APROBADA", "(actividad electiva)", "", nombre, "", ""])
         for _ in range(resultado["faltan_electivas"]):
             filas.append(["FALTA", "(actividad electiva)", "", "", "",
                           "El plan pide %d" % electivas["pide"]])
+        if electivas["pide_hs"]:
+            if resultado["horas_electivas_sin_leer"]:
+                estado, observacion = "REVISAR", "No pude leer la columna Hs. del EDITOR"
+            elif resultado["faltan_horas_electivas"]:
+                estado = "FALTA"
+                observacion = ("Faltan %g hs"
+                               % resultado["faltan_horas_electivas"])
+            else:
+                estado, observacion = "APROBADA", ""
+            filas.append([estado, "(horas de electivas: %g de %g)"
+                          % (electivas["horas"] or 0, electivas["pide_hs"]),
+                          "", "", "", observacion])
 
     for cursada in resultado["fuera_del_plan"]:
         filas.append(["FUERA DEL PLAN", "", "", cursada["nombre"], cursada["nota"],
@@ -718,6 +810,46 @@ def leer_materias_del_documento(doc):
     return [], ""
 
 
+def _columna_de_horas(hoja):
+    """Busca la columna 'Hs.' en el encabezado del EDITOR."""
+    for c in range(COL_ASIGNATURA_EDITOR, COL_ASIGNATURA_EDITOR + 8):
+        try:
+            titulo = normalizar(hoja.getCellByPosition(
+                c, FILA_ENCABEZADO_EDITOR).getString())
+        except Exception:
+            break
+        if titulo.startswith("HS") or titulo.startswith("HORAS") \
+                or titulo.startswith("CARGA"):
+            return c
+    return COL_HS_EDITOR
+
+
+def leer_filas_editor(doc):
+    """(asignatura, horas) de la hoja EDITOR, para las horas de las electivas."""
+    hojas = doc.getSheets()
+    if not hojas.hasByName(HOJA_EDITOR):
+        return []
+    hoja = hojas.getByName(HOJA_EDITOR)
+    col_hs = _columna_de_horas(hoja)
+
+    filas, vacias = [], 0
+    for f in range(PRIMERA_FILA_EDITOR, ULTIMA_FILA_DATOS):
+        nombre = hoja.getCellByPosition(COL_ASIGNATURA_EDITOR, f).getString().strip()
+        if not nombre:
+            vacias += 1
+            if vacias >= 10:
+                break
+            continue
+        vacias = 0
+        celda = hoja.getCellByPosition(col_hs, f)
+        horas = celda.getString().strip()
+        if not horas:
+            valor = celda.getValue()
+            horas = str(valor) if valor else ""
+        filas.append((nombre, horas))
+    return filas
+
+
 def escribir_informe(doc, filas, resumen):
     """Deja el detalle en la hoja de informe (la crea si no está)."""
     hojas = doc.getSheets()
@@ -787,12 +919,15 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
                  "Planes cargados:\n%s\n"
                  % (carrera or "(Datos!AZ3 está vacía)",
                     "\n".join("   \u2022 " + d for d in disponibles) or "   (ninguno)"))
+        texto += ("\nPara cargarlo, con la carrera elegida en el EDITOR corré la "
+                  "macro ImportarPlanDeLaPlanilla: arma el plan con la lista de "
+                  "materias que ya tiene la planilla.")
         pdf = buscar_pdf_de_carrera(carrera, carpetas)
         if pdf:
-            texto += ("\nEstá el PDF del plan ('%s') pero todavía no lo pasaste "
-                      "a texto: corré la macro ImportarPlanPDF, revisá el .txt "
-                      "que genera y volvé a chequear.\n" % os.path.basename(pdf))
-        texto += "\nMientras tanto, podés elegir el plan a mano."
+            texto += ("\nTambién está el PDF del plan ('%s'): si esa carrera no "
+                      "tiene la lista cargada, usá ImportarPlanPDF."
+                      % os.path.basename(pdf))
+        texto += "\n\nMientras tanto, podés elegir el plan a mano."
         if not avisar or not avisar_si_no_hay_plan:
             return None
         _msgbox(texto, tipo="WARNINGBOX")
@@ -821,7 +956,15 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
                     % (HOJA_DATOS, HOJA_EXTRACTOR), tipo="WARNINGBOX")
         return None
 
-    resultado = comparar(plan, armar_cursadas(filas))
+    # Las horas de electivas solo se leen si el plan las pide así.
+    horas_electivas = None
+    if plan.get("electivas_hs"):
+        try:
+            horas_electivas = sumar_horas_electivas(leer_filas_editor(doc))[0] or None
+        except Exception:
+            horas_electivas = None
+
+    resultado = comparar(plan, armar_cursadas(filas), horas_electivas)
     resumen = armar_resumen(alumno, resultado, femenino)
 
     aviso = ""
@@ -857,8 +1000,8 @@ g_exportedScripts = (ChequearPlan,)
 # MODO TERMINAL (para probar sin abrir LibreOffice)
 # ---------------------------------------------------------------------------
 
-def leer_materias_de_ods(ruta_ods):
-    """Lee (nombre, nota) de un .ods guardado, sin LibreOffice."""
+def _grillas_de_ods(ruta_ods):
+    """Lee un .ods guardado y devuelve {hoja: [[celda, ...], ...]}."""
     import zipfile
     from xml.etree import ElementTree as ET
 
@@ -888,11 +1031,21 @@ def leer_materias_de_ods(ruta_ods):
                 fila.extend([texto] * crep)
             grilla.extend([fila] * repetir)
         hojas[tabla.get(q("table:name"))] = grilla
+    return hojas
+
+
+def _celda_de_grilla(grilla, fila, col):
+    if fila < len(grilla) and col < len(grilla[fila]):
+        return (grilla[fila][col] or "").strip()
+    return ""
+
+
+def leer_materias_de_ods(ruta_ods, hojas=None):
+    """Lee (nombre, nota) de un .ods guardado, sin LibreOffice."""
+    hojas = hojas if hojas is not None else _grillas_de_ods(ruta_ods)
 
     def columna(grilla, fila, col):
-        if fila < len(grilla) and col < len(grilla[fila]):
-            return (grilla[fila][col] or "").strip()
-        return ""
+        return _celda_de_grilla(grilla, fila, col)
 
     for hoja, primera, col_nombre, col_nota in (
             (HOJA_DATOS, PRIMERA_FILA_DATOS - 1, COL_NOMBRE_DATOS, COL_NOTA_DATOS),
@@ -913,6 +1066,24 @@ def leer_materias_de_ods(ruta_ods):
         if filas:
             return filas, hoja
     return [], ""
+
+
+def leer_filas_editor_de_ods(hojas):
+    """(asignatura, horas) de la hoja EDITOR de un .ods guardado."""
+    grilla = hojas.get(HOJA_EDITOR)
+    if not grilla:
+        return []
+    filas, vacias = [], 0
+    for f in range(PRIMERA_FILA_EDITOR, min(len(grilla), ULTIMA_FILA_DATOS)):
+        nombre = _celda_de_grilla(grilla, f, COL_ASIGNATURA_EDITOR)
+        if not nombre:
+            vacias += 1
+            if vacias >= 10:
+                break
+            continue
+        vacias = 0
+        filas.append((nombre, _celda_de_grilla(grilla, f, COL_HS_EDITOR)))
+    return filas
 
 
 def leer_materias_de_texto(ruta):
@@ -936,8 +1107,17 @@ def main(argv):
 
     plan = leer_plan(argv[1])
     origen = argv[2]
+    horas_electivas = None
+    femenino = False
     if origen.lower().endswith(".ods"):
-        filas, hoja = leer_materias_de_ods(origen)
+        hojas = _grillas_de_ods(origen)
+        filas, hoja = leer_materias_de_ods(origen, hojas)
+        col, fil = _ref_a_columna_fila(CELDA_GENERO[1])
+        femenino = "SRTA" in normalizar(
+            _celda_de_grilla(hojas.get(CELDA_GENERO[0], []), fil, col))
+        if plan.get("electivas_hs"):
+            horas_electivas = sumar_horas_electivas(
+                leer_filas_editor_de_ods(hojas))[0] or None
     else:
         filas, hoja = leer_materias_de_texto(origen)
 
@@ -945,8 +1125,8 @@ def main(argv):
         print("No encontré materias en %s" % origen)
         return 1
 
-    resultado = comparar(plan, armar_cursadas(filas))
-    print(armar_resumen(argv[3] if len(argv) > 3 else "", resultado))
+    resultado = comparar(plan, armar_cursadas(filas), horas_electivas)
+    print(armar_resumen(argv[3] if len(argv) > 3 else "", resultado, femenino))
     print("\n(Materias leídas de '%s': %d)" % (hoja, len(filas)))
     return 0 if resultado["ok"] else 1
 

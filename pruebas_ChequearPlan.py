@@ -1,4 +1,4 @@
-"""Pruebas de ChequearPlan.py y ImportarPlanPDF.py (no necesitan LibreOffice).
+"""Pruebas de ChequearPlan.py e ImportarPlan.py (no necesitan LibreOffice).
 
     python3 pruebas_ChequearPlan.py
 """
@@ -6,7 +6,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ChequearPlan as C
-import ImportarPlanPDF as I
+import ImportarPlan as I
 
 PLAN_EJEMPLO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "Planes de estudio",
@@ -134,6 +134,61 @@ r = C.comparar(p, C.armar_cursadas([("MATEMATICA I", "7 (SIETE)"),
                                     ("QUIMICA GENERAL E INORGANICA", "8"),
                                     ("QUIMICA ORGANICA I", "Aprobado")]))
 chk(r["ok"] and not r["aproximadas"], "el borrador sirve para chequear: %s" % r["faltantes"])
+
+
+# --- la lista de materias que ya tiene la planilla (Datos!AZ) --------------
+celdas = ["SELECCIÓN", "", "ACTIVIDAD ELECTIVA: ESCRIBIR SU NOMBRE Y LAS HORAS",
+          "ENFERMERIA BASICA", "CIENCIAS BIOLOGICAS", "ENFERMERIA BASICA",
+          "#¡REF!", "PRACTICA INTEGRADA I", "0", "0", "0"]
+chk(I.materias_de_la_lista(celdas) == ["ENFERMERIA BASICA", "CIENCIAS BIOLOGICAS",
+                                       "PRACTICA INTEGRADA I"],
+    I.materias_de_la_lista(celdas))
+chk(I.materias_de_la_lista(["0", "0", ""]) == [], "lista vacía o rota")
+chk(I.nombre_de_archivo("GEOLOGIA (PLAN 2018)") == "GEOLOGIA (PLAN 2018).txt",
+    I.nombre_de_archivo("GEOLOGIA (PLAN 2018)"))
+
+# --- electivas por carga horaria ------------------------------------------
+chk(C.horas_de("95 hs") == 95 and C.horas_de("4,5") == 4.5 and C.horas_de("") == 0,
+    "horas_de")
+filas_editor = [("ENFERMERIA BASICA", "170"),
+                ("ACTIVIDAD ELECTIVA: TALLER DE RCP", "60"),
+                ("ACTIVIDAD ELECTIVA: INFORMATICA", "35")]
+chk(C.sumar_horas_electivas(filas_editor) == (95.0, 2), C.sumar_horas_electivas(filas_editor))
+
+plan_hs = {"titulo": "X", "electivas": 0, "electivas_hs": 95, "materias": []}
+cursadas_hs = C.armar_cursadas([("ACTIVIDAD ELECTIVA: TALLER DE RCP", "8")])
+chk(C.comparar(plan_hs, cursadas_hs, 95.0)["ok"], "95 de 95 hs")
+r = C.comparar(plan_hs, cursadas_hs, 60.0)
+chk(not r["ok"] and r["faltan_horas_electivas"] == 35, "faltan 35 hs")
+# si no se pudieron leer las horas, se avisa pero no se da por faltante
+r = C.comparar(plan_hs, cursadas_hs, None)
+chk(r["ok"] and r["horas_electivas_sin_leer"], "horas sin leer: avisa, no bloquea")
+chk("no pude leer la columna Hs" in C.armar_resumen("X", r), C.armar_resumen("X", r))
+
+# --- el plan real de ENFERMERIA -------------------------------------------
+enf = C.leer_plan(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "Planes de estudio", "ENFERMERIA.txt"))
+chk(len(enf["materias"]) == 19, "materias de enfermería: %d" % len(enf["materias"]))
+chk(enf["electivas_hs"] == 95 and enf["carreras"] == ["ENFERMERIA"], "cabecera de enfermería")
+del_analitico = [
+    "ENFERMERIA BASICA", "CIENCIAS BIOLOGICAS", "ANTROPOLOGIA", "SOCIOLOGIA I",
+    "FILOSOFIA I", "ENFERMERIA COMUNITARIA I", "MICROBIOLOGIA Y PARASITOLOGIA",
+    "ENFERMERIA DEL ADULTO Y EL ANCIANO", "ENFERMERIA MATERNO - INFANTIL",
+    "NUTRICION Y DIETOTERAPIA", "EPIDEMIOLOGIA", "FARMACOLOGIA", "PSICOLOGIA",
+    "ETICA Y DEONTOLOGIA PROFESIONAL I", "ENFERMERIA DEL NIÑO Y EL ADOLESCENTE",
+    "ENFERMERIA EN SALUD MENTAL", "INVESTIGACION EN ENFERMERIA I",
+    "GESTION DE LOS SERVICIOS DE ENFERMERIA HOSPITALARIOS Y COMUNITARIOS I",
+    "PRACTICA INTEGRADA I",
+]
+r = C.comparar(enf, C.armar_cursadas([(m, "7 (SIETE)") for m in del_analitico]), 95.0)
+chk(r["ok"] and not r["aproximadas"] and len(r["aprobadas"]) == 19,
+    "enfermería completa: faltan %s" % [m.nombre for m in r["faltantes"]])
+# el analítico a veces escribe el guion distinto o con tildes: da igual
+r = C.comparar(enf, C.armar_cursadas(
+    [(m, "7") for m in del_analitico[:8]] +
+    [("ENFERMERÍA MATERNO-INFANTIL", "7")] +
+    [(m, "7") for m in del_analitico[9:]]), 95.0)
+chk(r["ok"] and not r["aproximadas"], "materno-infantil con guion pegado")
 
 
 print("Fallas: %d" % len(errores))

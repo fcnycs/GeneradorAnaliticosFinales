@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# PLAN DE ESTUDIOS - ENFERMERÍA
+# ---------------------------------------------------------------------------
+# Fuente: Enfermeria.pdf (Facultad de Ciencias Naturales y Ciencias de la Salud,
+# UNPSJB). Título: ENFERMERO/A.
+#   Resolución CDFCNyCS N° 104/18
+#   Resolución C.S. N° 021/18
+#   Resolución 2020-890-APN-ME
+#
+# Carga horaria: 630 hs 1° año + 760 hs 2° año + 645 hs 3° año = 2035 hs.
+# Las actividades electivas se piden por carga horaria (95 hs), no por cantidad.
+#
+# Los nombres están escritos como los usa la planilla (mayúsculas, sin tildes).
+# Da igual: la comparación ignora tildes, mayúsculas y guiones.
+# ---------------------------------------------------------------------------
+
+CARRERA: ENFERMERIA
+
+TITULO: Enfermero/a (Res. CDFCNyCS 104/18 y C.S. 021/18)
+ELECTIVAS_HS: 95
+
+[Primer año]
+ENFERMERIA BASICA
+CIENCIAS BIOLOGICAS
+ANTROPOLOGIA
+SOCIOLOGIA I
+FILOSOFIA I
+ENFERMERIA COMUNITARIA I
+MICROBIOLOGIA Y PARASITOLOGIA
+
+[Segundo año]
+ENFERMERIA DEL ADULTO Y EL ANCIANO
+ENFERMERIA MATERNO - INFANTIL
+NUTRICION Y DIETOTERAPIA
+EPIDEMIOLOGIA
+FARMACOLOGIA
+PSICOLOGIA
+ETICA Y DEONTOLOGIA PROFESIONAL I
+
+[Tercer año]
+ENFERMERIA DEL NIÑO Y EL ADOLESCENTE
+ENFERMERIA EN SALUD MENTAL
+INVESTIGACION EN ENFERMERIA I
+GESTION DE LOS SERVICIOS DE ENFERMERIA HOSPITALARIOS Y COMUNITARIOS I
+PRACTICA INTEGRADA I

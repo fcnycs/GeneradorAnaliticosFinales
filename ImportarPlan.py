@@ -1,20 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-Importar un plan de estudios desde el PDF oficial
-=================================================
-Toma el PDF del plan y escribe al lado un borrador .txt con las materias, en el
-formato que lee ChequearPlan.py.
+Importar un plan de estudios (a un .txt que lee ChequearPlan.py)
+================================================================
+Dos formas de armar el plan de una carrera, según de dónde salga:
 
-Es un BORRADOR: hay que abrirlo y revisarlo una vez (sacar lo que sobra, agregar
-lo que falte, poner la línea CARRERA: como figura en Datos!AZ3). Después ya
-queda hecho para siempre, salvo que cambie el plan.
+  ImportarPlanDeLaPlanilla()  <- la MÁS CONFIABLE
+      Usa la lista de materias que la propia planilla tiene en Datos!AZ,
+      la del desplegable de ASIGNATURAS. Elegí la carrera en el EDITOR y
+      corré la macro: sale con los nombres escritos igual que en el
+      analítico, así que no hay nada que emparejar después.
 
-Junto al .txt deja también un "<nombre>.crudo.txt" con todo el texto del PDF tal
-cual, para copiar y pegar de ahí si el borrador salió flojo.
+  ImportarPlanPDF()
+      Para las carreras que no tienen la lista cargada en la planilla:
+      lee el PDF del plan y saca las materias de ahí.
 
-Se puede usar de dos formas:
-  1) Desde LibreOffice (botón o Herramientas > Macros)  ->  ImportarPlanPDF()
-  2) Desde la terminal                                  ->  python3 ImportarPlanPDF.py plan.pdf [otro.pdf ...]
+En los dos casos es un BORRADOR: hay que abrirlo y revisarlo una vez.
+
+Revisar quiere decir: sacar lo que sobra, agregar lo que falte, y completar
+ELECTIVAS: o ELECTIVAS_HS: si el plan pide actividades electivas. Después queda
+hecho para siempre, salvo que cambie el plan.
+
+Cuando importa de un PDF, deja también un "<nombre>.crudo.txt" con todo el texto
+del PDF tal cual, para copiar y pegar de ahí si el borrador salió flojo.
+
+Desde la terminal:
+    python3 ImportarPlan.py plan.pdf [otro.pdf ...]
+    python3 ImportarPlan.py --planilla GENERADOR.ods
 """
 
 import os
@@ -33,7 +44,59 @@ def sin_tildes(texto):
 
 
 # ---------------------------------------------------------------------------
-# RECONOCER LOS RENGLONES DEL PLAN
+# LA LISTA QUE YA TIENE LA PLANILLA (Datos!AZ)
+# ---------------------------------------------------------------------------
+
+HOJA_LISTA = "Datos"
+COL_LISTA = 51                # Datos!AZ
+FILA_CARRERA = 2              # Datos!AZ3: la carrera elegida en el EDITOR
+PRIMERA_FILA_LISTA = 4        # Datos!AZ5 en adelante
+ULTIMA_FILA_LISTA = 400
+
+# Renglones de la lista que no son materias.
+_NO_ES_MATERIA = ("SELECCION", "SELECCIONAR", "ACTIVIDAD ELECTIVA", "ELECTIVA",
+                  "0", "")
+
+
+def es_renglon_de_lista(texto):
+    """¿Este renglón de Datos!AZ es una materia de verdad?"""
+    t = " ".join((texto or "").split())
+    if not t or t == "0" or t.startswith("#"):      # vacío, cero o #¡REF!
+        return False
+    plano = sin_tildes(t).upper()
+    if plano in _NO_ES_MATERIA:
+        return False
+    # "ACTIVIDAD ELECTIVA: ESCRIBIR SU NOMBRE Y ..." es el renglón comodín
+    # del desplegable, no una materia.
+    if plano.startswith("ACTIVIDAD ELECTIVA") or plano.startswith("ELECTIVA"):
+        return False
+    return len(t) >= 4
+
+
+def materias_de_la_lista(celdas):
+    """De las celdas de Datos!AZ a la lista de materias, sin repetir."""
+    materias, vistas = [], set()
+    vacias = 0
+    for celda in celdas:
+        texto = " ".join((celda or "").split())
+        if not texto or texto == "0":
+            vacias += 1
+            if vacias >= 15 and materias:
+                break
+            continue
+        vacias = 0
+        if not es_renglon_de_lista(texto):
+            continue
+        clave = sin_tildes(texto).upper()
+        if clave in vistas:
+            continue
+        vistas.add(clave)
+        materias.append(texto)
+    return materias
+
+
+# ---------------------------------------------------------------------------
+# RECONOCER LOS RENGLONES DEL PLAN (cuando sale de un PDF)
 # ---------------------------------------------------------------------------
 
 # "PRIMER AÑO", "1° AÑO", "AÑO 2", "CICLO BASICO"
@@ -188,22 +251,41 @@ def carrera_sugerida(nombre_archivo):
     return " ".join(base.split())
 
 
-def armar_borrador(grupos, descartadas, carrera, origen):
+def armar_borrador(grupos, descartadas, carrera, origen, desde_planilla=False):
     """El texto del .txt que se va a escribir."""
     total = sum(len(m) for _, m in grupos)
-    lineas = [
-        "# " + "-" * 73,
-        "# BORRADOR generado automáticamente desde:",
-        "#     %s" % os.path.basename(origen),
-        "#",
-        "# REVISALO ANTES DE USARLO. La macro saca las materias del texto del",
-        "# PDF, así que puede colarse algún renglón de más o faltar alguno.",
-        "#",
-        "# Qué mirar:",
-        "#   1. La línea CARRERA: tiene que decir lo mismo que Datos!AZ3.",
-        "#   2. Que estén todas las materias y ninguna de más.",
-        "#   3. ELECTIVAS: cuántas actividades electivas pide el plan.",
-        "#   4. Al final están los renglones que descarté, por las dudas.",
+    if desde_planilla:
+        cabecera = [
+            "# BORRADOR generado desde la lista de materias de la planilla",
+            "#     (Datos!AZ, la del desplegable de ASIGNATURAS)",
+            "#",
+            "# Los nombres son los mismos que usa el analítico, así que no hay",
+            "# nada que emparejar. REVISALO igual:",
+            "#",
+            "# Qué mirar:",
+            "#   1. Que la lista sea el plan completo y no le falte nada.",
+            "#   2. ELECTIVAS: cuántas actividades electivas pide el plan, o",
+            "#      ELECTIVAS_HS: cuántas horas, si las pide por carga horaria.",
+            "#   3. Los años ([Primer año], etc.) los tenés que poner a mano:",
+            "#      la planilla no los distingue. Es solo para el informe.",
+        ]
+    else:
+        cabecera = [
+            "# BORRADOR generado automáticamente desde:",
+            "#     %s" % os.path.basename(origen),
+            "#",
+            "# REVISALO ANTES DE USARLO. La macro saca las materias del texto del",
+            "# PDF, así que puede colarse algún renglón de más o faltar alguno.",
+            "#",
+            "# Qué mirar:",
+            "#   1. La línea CARRERA: tiene que decir lo mismo que Datos!AZ3.",
+            "#   2. Que estén todas las materias y ninguna de más.",
+            "#   3. ELECTIVAS: cuántas actividades electivas pide el plan, o",
+            "#      ELECTIVAS_HS: cuántas horas, si las pide por carga horaria.",
+            "#   4. Al final están los renglones que descarté, por las dudas.",
+        ]
+
+    lineas = ["# " + "-" * 73] + cabecera + [
         "#",
         "# Se puede agregar a mano, en cualquier renglón:",
         "#   MATERIA | OTRO NOMBRE     nombres alternativos (como los escribe",
@@ -218,21 +300,54 @@ def armar_borrador(grupos, descartadas, carrera, origen):
     ]
 
     for titulo, materias in grupos:
-        lineas.append("[%s]" % (titulo or "Sin año"))
+        if titulo or not desde_planilla:
+            lineas.append("[%s]" % (titulo or "Sin año"))
         lineas.extend(materias)
         lineas.append("")
 
-    lineas += [
-        "# " + "-" * 73,
-        "# Materias detectadas: %d" % total,
-        "#",
-        "# RENGLONES DESCARTADOS (revisá si alguno era una materia; para",
-        "# recuperarlo, copialo arriba sin el # adelante):",
-        "# " + "-" * 73,
-    ]
-    lineas += ["#   " + d for d in descartadas]
+    lineas += ["# " + "-" * 73, "# Materias detectadas: %d" % total]
+    if descartadas:
+        lineas += [
+            "#",
+            "# RENGLONES DESCARTADOS (revisá si alguno era una materia; para",
+            "# recuperarlo, copialo arriba sin el # adelante):",
+            "# " + "-" * 73,
+        ]
+        lineas += ["#   " + d for d in descartadas]
     lineas.append("")
     return "\n".join(lineas)
+
+
+def nombre_de_archivo(carrera):
+    """Nombre de archivo presentable para una carrera."""
+    limpio = re.sub(r'[\\/:*?"<>|]+', " ", carrera or "PLAN")
+    return " ".join(limpio.split()) + ".txt"
+
+
+def carpeta_de_planes(carpeta_base, crear=True):
+    """La carpeta de planes al lado del .ods. Si no está, la crea."""
+    try:
+        nombres = sorted(os.listdir(carpeta_base))
+    except OSError:
+        nombres = []
+    for nombre in nombres:
+        ruta = os.path.join(carpeta_base, nombre)
+        if os.path.isdir(ruta) and sin_tildes(nombre).lower().startswith("planes"):
+            return ruta
+    ruta = os.path.join(carpeta_base, "Planes de estudio")
+    if crear and not os.path.isdir(ruta):
+        os.makedirs(ruta)
+    return ruta
+
+
+def guardar_plan_de_lista(carrera, materias, carpeta_destino):
+    """Escribe el borrador de un plan sacado de la lista de la planilla."""
+    texto = armar_borrador([("", materias)], [], carrera, "la planilla",
+                           desde_planilla=True)
+    destino = _sin_pisar(os.path.join(carpeta_destino, nombre_de_archivo(carrera)))
+    with open(destino, "w", encoding="utf-8") as f:
+        f.write(texto)
+    return destino
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +410,73 @@ def _msgbox(texto, titulo="Importar plan de estudios", tipo="INFOBOX"):
         1, titulo, texto).execute()
 
 
+def _documento_actual():
+    import uno
+    ctx = uno.getComponentContext()
+    desktop = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.Desktop", ctx)
+    return desktop.getCurrentComponent()
+
+
+def _carpeta_del_ods(doc):
+    try:
+        import uno
+        url = doc.getURL()
+        if url:
+            return os.path.dirname(uno.fileUrlToSystemPath(url))
+    except Exception:
+        pass
+    return None
+
+
+def ImportarPlanDeLaPlanilla(*args):
+    """Botón / macro: arma el plan de la carrera elegida con la lista de la
+    propia planilla (Datos!AZ, la del desplegable de ASIGNATURAS)."""
+    doc = _documento_actual()
+    if doc is None or not hasattr(doc, "getSheets"):
+        _msgbox("Abrí el generador (.ods) y probá de nuevo.", tipo="ERRORBOX")
+        return
+
+    hojas = doc.getSheets()
+    if not hojas.hasByName(HOJA_LISTA):
+        _msgbox("No encontré la hoja '%s'." % HOJA_LISTA, tipo="ERRORBOX")
+        return
+    hoja = hojas.getByName(HOJA_LISTA)
+
+    carrera = hoja.getCellByPosition(COL_LISTA, FILA_CARRERA).getString().strip()
+    if not carrera:
+        _msgbox("En Datos!AZ3 no hay ninguna carrera: elegila en el cuadro de "
+                "carrera del EDITOR y volvé a probar.", tipo="WARNINGBOX")
+        return
+
+    celdas = [hoja.getCellByPosition(COL_LISTA, f).getString()
+              for f in range(PRIMERA_FILA_LISTA, ULTIMA_FILA_LISTA)]
+    materias = materias_de_la_lista(celdas)
+    if not materias:
+        _msgbox("La carrera '%s' no tiene cargada la lista de materias en la "
+                "planilla (Datos!AZ está vacía o da #¡REF!).\n\n"
+                "Para esta carrera usá ImportarPlanPDF, que la saca del PDF "
+                "del plan." % carrera, tipo="WARNINGBOX")
+        return
+
+    base = _carpeta_del_ods(doc)
+    if not base:
+        _msgbox("Guardá el .ods antes de importar, así sé dónde dejar el plan.",
+                tipo="WARNINGBOX")
+        return
+
+    try:
+        destino = guardar_plan_de_lista(carrera, materias, carpeta_de_planes(base))
+    except Exception as e:
+        _msgbox("No pude guardar el plan:\n%s" % e, tipo="ERRORBOX")
+        return
+
+    _msgbox("Listo: %d materias de '%s'.\n\nQuedó en:\n%s\n\n"
+            "Abrilo y revisalo: fijate que no falte ninguna materia y completá "
+            "ELECTIVAS: (o ELECTIVAS_HS: si el plan las pide por horas)."
+            % (len(materias), carrera, destino))
+
+
 def ImportarPlanPDF(*args):
     """Botón / macro: elegí uno o varios PDF de planes y los pasa a .txt."""
     import uno
@@ -344,17 +526,51 @@ def ImportarPlanPDF(*args):
             tipo="INFOBOX" if hechos and not fallados else "WARNINGBOX")
 
 
-g_exportedScripts = (ImportarPlanPDF,)
+g_exportedScripts = (ImportarPlanDeLaPlanilla, ImportarPlanPDF)
 
 
 # ---------------------------------------------------------------------------
 # MODO TERMINAL
 # ---------------------------------------------------------------------------
 
+def _importar_de_planilla_en_terminal(ruta_ods):
+    """Modo terminal del import desde la planilla (usa el lector de ChequearPlan)."""
+    import ChequearPlan
+
+    hojas = ChequearPlan._grillas_de_ods(ruta_ods)
+    grilla = hojas.get(HOJA_LISTA) or []
+
+    def celda(fila, col):
+        if fila < len(grilla) and col < len(grilla[fila]):
+            return grilla[fila][col] or ""
+        return ""
+
+    carrera = celda(FILA_CARRERA, COL_LISTA).strip()
+    materias = materias_de_la_lista(
+        [celda(f, COL_LISTA) for f in range(PRIMERA_FILA_LISTA, ULTIMA_FILA_LISTA)])
+    if not carrera or not materias:
+        print("No encontré la carrera o su lista de materias en %s "
+              "(Datos!AZ3 y Datos!AZ5 en adelante)." % ruta_ods)
+        return 1
+
+    destino = guardar_plan_de_lista(
+        carrera, materias, carpeta_de_planes(os.path.dirname(os.path.abspath(ruta_ods))))
+    print("%s -> %s (%d materias)" % (carrera, destino, len(materias)))
+    return 0
+
+
 def main(argv):
     if len(argv) < 2:
-        print("Uso: python3 ImportarPlanPDF.py plan.pdf [otro.pdf ...]")
+        print("Uso: python3 ImportarPlan.py plan.pdf [otro.pdf ...]")
+        print("     python3 ImportarPlan.py --planilla GENERADOR.ods")
         return 2
+
+    if argv[1] in ("--planilla", "-p"):
+        if len(argv) < 3:
+            print("Falta el .ods: python3 ImportarPlan.py --planilla GENERADOR.ods")
+            return 2
+        return _importar_de_planilla_en_terminal(argv[2])
+
     for ruta in argv[1:]:
         try:
             destino, cantidad = importar(ruta)
