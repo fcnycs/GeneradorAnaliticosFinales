@@ -1109,6 +1109,10 @@ def chequear_documento(doc, avisar=True):
     resultado = comparar(plan, armar_cursadas(filas), horas_electivas,
                          electivas_sin_horas)
     resumen = armar_resumen(alumno, resultado, femenino)
+    # Para quien llame al chequeo desde otra macro (GenerarAnalitico) y quiera
+    # mostrar el resultado sin volver a armarlo.
+    resultado["resumen"] = resumen
+    resultado["alumno"] = alumno
 
     aviso = ""
     if exactitud and exactitud < 1.0:

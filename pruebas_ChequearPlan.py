@@ -327,6 +327,58 @@ C.vaciar_hoja_informe(hoja)          # sobre una hoja vacía no explota
 chk(hoja.celdas == {}, "vaciar dos veces")
 
 
+# --- la red de seguridad de GenerarAnalitico ------------------------------
+import importlib.util
+from importlib.machinery import SourceFileLoader
+
+_ruta_gen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GenerarAnalitico")
+_spec = importlib.util.spec_from_loader("GenerarAnaliticoMod",
+                                        SourceFileLoader("GenerarAnaliticoMod", _ruta_gen))
+G = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(G)
+
+
+class _Chequeador:
+    """Doble de ChequearPlan.py para probar la decisión de generar o no."""
+
+    def __init__(self, resultado=None, explota=False):
+        self.resultado, self.explota = resultado, explota
+
+    def chequear_documento(self, doc, avisar=True):
+        if self.explota:
+            raise RuntimeError("algo falló")
+        return self.resultado
+
+
+def _decide(modulo, respuesta=True):
+    """Corre se_puede_generar() con un chequeador de mentira."""
+    preguntas = []
+    G._importar_chequeador = lambda doc: modulo
+
+    def preguntar(texto):
+        preguntas.append(texto)
+        return respuesta
+
+    return G.se_puede_generar(None, preguntar), preguntas
+
+
+# está todo aprobado: genera sin preguntar nada
+ok, preguntas = _decide(_Chequeador({"ok": True, "resumen": "todo bien"}))
+chk(ok and not preguntas, "alumno recibido: no tiene que preguntar")
+
+# le falta algo: pregunta, y respeta la respuesta
+ok, preguntas = _decide(_Chequeador({"ok": False, "resumen": "le faltan 2 materias"}), True)
+chk(ok and len(preguntas) == 1 and "le faltan 2 materias" in preguntas[0]
+    and "igual?" in preguntas[0], preguntas)
+ok, preguntas = _decide(_Chequeador({"ok": False, "resumen": "le faltan 2 materias"}), False)
+chk(not ok and len(preguntas) == 1, "si contesta que no, no se genera")
+
+# el chequeo no se pudo hacer: genera igual y en silencio
+for modulo in (None, _Chequeador(None), _Chequeador(explota=True)):
+    ok, preguntas = _decide(modulo, False)
+    chk(ok and not preguntas, "sin chequeo posible tiene que generar igual")
+
+
 print("Fallas: %d" % len(errores))
 for e in errores:
     print("  -", e)

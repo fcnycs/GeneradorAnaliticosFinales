@@ -17,6 +17,7 @@ Se puede usar de dos formas:
 import os
 import re
 import shutil
+import sys
 import zipfile
 from xml.sax.saxutils import escape
 
@@ -752,6 +753,88 @@ def _preguntar(texto, titulo="Generador de analíticos"):
     return caja.execute() in (1, 2)
 
 
+# ---------------------------------------------------------------------------
+# CHEQUEO DEL PLAN DE ESTUDIOS ANTES DE GENERAR
+# ---------------------------------------------------------------------------
+# Lo normal es que el alumno ya esté recibido cuando llega el trámite. Pero si
+# se coló un error y le falta una materia, generar el analítico es un problema
+# serio. Por eso, antes de generar, se chequea contra el plan de estudios y
+# SOLO si falta algo se pregunta si generar igual. Si está todo bien, o si el
+# chequeo no se puede hacer, no se molesta a nadie.
+
+
+def _importar_chequeador(doc):
+    """Busca e importa ChequearPlan.py. Devuelve el módulo o None.
+
+    Primero prueba el import directo (cuando las dos macros están en la misma
+    carpeta de scripts, que es lo normal) y, si no, agrega al path las carpetas
+    donde puede estar: la de esta macro, la de macros de usuario de LibreOffice
+    y la del .ods abierto.
+    """
+    try:
+        import ChequearPlan
+        return ChequearPlan
+    except ImportError:
+        pass
+
+    candidatos = []
+    try:
+        candidatos.append(os.path.dirname(os.path.abspath(__file__)))
+    except NameError:
+        pass
+
+    if sys.platform.startswith("win"):
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            candidatos.append(os.path.join(
+                appdata, "LibreOffice", "4", "user", "Scripts", "python"))
+    else:
+        candidatos.append(os.path.expanduser(
+            "~/.config/libreoffice/4/user/Scripts/python"))
+
+    carpeta_ods = carpeta_del_ods(doc)
+    if carpeta_ods:
+        candidatos.append(carpeta_ods)
+
+    for carpeta in candidatos:
+        if not carpeta or not os.path.isfile(os.path.join(carpeta, "ChequearPlan.py")):
+            continue
+        if carpeta not in sys.path:
+            sys.path.insert(0, carpeta)
+        try:
+            import ChequearPlan
+            return ChequearPlan
+        except ImportError:
+            continue
+    return None
+
+
+def se_puede_generar(doc, preguntar=None):
+    """¿Seguimos adelante con la generación?
+
+    Devuelve True salvo que al alumno le falte algo Y el usuario conteste que
+    no. El chequeo es una ayuda, no un obstáculo: si no está la macro, si esa
+    carrera no tiene el plan cargado o si algo falla, se genera igual y en
+    silencio, como toda la vida.
+    """
+    preguntar = preguntar or _preguntar
+
+    modulo = _importar_chequeador(doc)
+    if modulo is None:
+        return True
+
+    try:
+        resultado = modulo.chequear_documento(doc, avisar=False)
+    except Exception:
+        return True
+
+    if resultado is None or resultado.get("ok"):
+        return True
+
+    texto = resultado.get("resumen") or "Al alumno le faltan materias del plan."
+    return preguntar(texto + "\n\n\u00bfGenerar el analítico igual?")
+
+
 def GenerarAnalitico(*args):
     """Botón principal: genera el .odt en su carpeta y actualiza el Listado."""
     import uno
@@ -790,6 +873,11 @@ def GenerarAnalitico(*args):
 
     if not d["filas"]:
         _msgbox("No hay materias cargadas en Datos!A11 en adelante.")
+        return
+
+    # Última red: si le falta alguna materia del plan, preguntar antes de generar
+    if not se_puede_generar(doc):
+        _msgbox("No se generó nada.")
         return
 
     # Carpeta propia del alumno, adentro de "Para enviar"

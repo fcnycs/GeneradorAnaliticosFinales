@@ -6,7 +6,7 @@ Generador de Analíticos finales - Alumnos
 | Archivo | Qué hace |
 | --- | --- |
 | `ExtraerDatos` | Lee el PDF del certificado analítico parcial y pega todo en la planilla (hojas `EDITOR`, `Datos` y `Extractor`). |
-| `GenerarAnalitico` | Arma el `.odt` final a partir del modelo y actualiza el `Listado`. |
+| `GenerarAnalitico` | Arma el `.odt` final a partir del modelo y actualiza el `Listado`. Antes de generar chequea el plan y avisa si al alumno le falta algo. |
 | `ChequearPlan.py` | Compara las materias del alumno con el plan de estudios de la carrera y avisa si le falta alguna. |
 | `ImportarPlan.py` | Arma el plan de una carrera: desde la lista que ya tiene la planilla, o desde el PDF del plan. |
 | `pruebas_ChequearPlan.py` | Pruebas del chequeo y del importador. Se corre con `python3 pruebas_ChequearPlan.py`, sin LibreOffice. |
@@ -24,9 +24,21 @@ Responde una sola pregunta: **¿a este alumno le falta alguna materia?**
 ### Cómo se usa
 
 Botón en la hoja (o Herramientas → Macros), asignado a la macro `ChequearPlan`.
-Se corre cuando uno quiere, no solo: el momento útil es **antes de generar el
-analítico**, con los datos ya cargados y revisados. Ahí el chequeo hace de
-última red por si el alumno no estaba recibido.
+Se corre cuando uno quiere: el momento útil es con los datos ya cargados y
+revisados, antes de generar el analítico.
+
+Además, **`GenerarAnalitico` lo corre solo antes de generar**, como última red:
+
+* si el alumno tiene todo aprobado, no dice nada y genera como siempre;
+* si le falta alguna materia, muestra qué le falta y pregunta
+  *¿Generar el analítico igual?* — con **No** no se genera nada;
+* si esa carrera no tiene el plan cargado, o el chequeo falla por cualquier
+  motivo, genera igual y en silencio. El chequeo es una ayuda, nunca un
+  obstáculo.
+
+Los avisos que no son "le falta una materia" (electivas sin nombre, horas sin
+cargar) no interrumpen la generación: aparecen solo cuando corrés el chequeo
+con el botón.
 
 Al terminar muestra un cartel con el resultado y deja el detalle materia por
 materia en una hoja nueva llamada `Chequeo`, encabezada con la fecha y el
