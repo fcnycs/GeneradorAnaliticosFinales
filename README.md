@@ -23,9 +23,10 @@ Responde una sola pregunta: **¿a este alumno le falta alguna materia?**
 
 ### Cómo se usa
 
-* **Solo:** botón en la hoja, asignado a la macro `ChequearPlan`.
-* **Automático:** `ExtraerDatos` lo llama al terminar la extracción. Si todavía
-  no está cargado el plan de esa carrera, no dice nada y sigue de largo.
+Botón en la hoja (o Herramientas → Macros), asignado a la macro `ChequearPlan`.
+Se corre cuando uno quiere, no solo: el momento útil es **antes de generar el
+analítico**, con los datos ya cargados y revisados. Ahí el chequeo hace de
+última red por si el alumno no estaba recibido.
 
 Al terminar muestra un cartel con el resultado y deja el detalle materia por
 materia en una hoja nueva llamada `Chequeo`, encabezada con la fecha y el

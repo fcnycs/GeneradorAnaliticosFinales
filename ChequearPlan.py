@@ -1035,13 +1035,8 @@ def _elegir_plan_a_mano(carpetas):
     return uno.fileUrlToSystemPath(archivos[0])
 
 
-def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
-    """El chequeo en sí. Devuelve el resultado, o None si no se pudo hacer.
-
-    avisar_si_no_hay_plan=False sirve para el chequeo automático que corre al
-    final de la extracción: si todavía no hay carpeta de planes o no está el
-    plan de esa carrera, se sale calladito en vez de tirar un cartel.
-    """
+def chequear_documento(doc, avisar=True):
+    """El chequeo en sí. Devuelve el resultado, o None si no se pudo hacer."""
     carrera = _celda(doc, *CELDA_CARRERA)
     apellido = _celda(doc, *CELDA_APELLIDO)
     nombres = _celda(doc, *CELDA_NOMBRES)
@@ -1050,7 +1045,7 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
 
     carpetas = buscar_carpetas_de_planes(_carpeta_del_ods(doc))
     if not carpetas:
-        if avisar and avisar_si_no_hay_plan:
+        if avisar:
             _msgbox("No encontré la carpeta con los planes de estudio.\n\n"
                     "Creá una carpeta que se llame 'Planes de estudio' al lado "
                     "del generador (el .ods) y poné adentro un archivo de texto "
@@ -1073,7 +1068,7 @@ def chequear_documento(doc, avisar=True, avisar_si_no_hay_plan=True):
                       "tiene la lista cargada, usá ImportarPlanPDF."
                       % os.path.basename(pdf))
         texto += "\n\nMientras tanto, podés elegir el plan a mano."
-        if not avisar or not avisar_si_no_hay_plan:
+        if not avisar:
             return None
         _msgbox(texto, tipo="WARNINGBOX")
         ruta_plan = _elegir_plan_a_mano(carpetas)
