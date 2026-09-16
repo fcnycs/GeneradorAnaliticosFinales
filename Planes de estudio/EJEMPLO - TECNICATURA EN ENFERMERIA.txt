@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# PLAN DE ESTUDIOS - ARCHIVO DE EJEMPLO
+# ---------------------------------------------------------------------------
+# Copiá este archivo, renombralo con el nombre de la carrera EXACTAMENTE como
+# figura en Datos!AZ3 del generador (por ejemplo "TECNICATURA SUPERIOR EN
+# ENFERMERIA.txt") y cargale las materias del plan.
+#
+# Reglas del formato:
+#   * Un renglón por materia.
+#   * Lo que empieza con #  es un comentario (no se lee).
+#   * [Primer año]          es un título de grupo: solo sirve para el informe.
+#   * TITULO: ...           nombre lindo del plan (sale en el cartel).
+#   * ELECTIVAS: 2          cuántas actividades electivas pide el plan.
+#   * MATERIA | OTRO NOMBRE | OTRO MAS
+#         los nombres después de "|" son alias: se usan cuando el analítico
+#         escribe la materia distinto que el plan.
+#   * ? MATERIA             el signo de pregunta adelante marca que NO es
+#         obligatoria (optativa): si falta, se informa pero no bloquea.
+#
+# No hace falta poner tildes ni respetar mayúsculas: la comparación las ignora,
+# igual que los códigos del tipo "1A - " que trae el analítico.
+# ---------------------------------------------------------------------------
+
+TITULO: Tecnicatura Superior en Enfermería (Res. 000/00)
+ELECTIVAS: 2
+
+[Primer año]
+ANATOMIA Y FISIOLOGIA | ANATOMOFISIOLOGIA | ANATOMIA Y FISIOLOGIA HUMANA
+ENFERMERIA BASICA | FUNDAMENTOS DE ENFERMERIA
+PSICOLOGIA EVOLUTIVA
+MICROBIOLOGIA Y PARASITOLOGIA | PARASITOLOGIA
+INGLES 1 | INGLES I
+
+[Segundo año]
+FARMACOLOGIA
+ENFERMERIA DEL ADULTO Y EL ANCIANO | EL ANCIANO
+NUTRICION Y DIETOTERAPIA
+SALUD PUBLICA
+EMERGENTOLOGIA
+? SEMINARIO DE INVESTIGACION
+
+[Tercer año]
+ENFERMERIA MATERNO INFANTIL
+ADMINISTRACION DE SERVICIOS DE ENFERMERIA
+PRACTICA PROFESIONALIZANTE
+ETICA Y DEONTOLOGIA PROFESIONAL | ETICA PROFESIONAL

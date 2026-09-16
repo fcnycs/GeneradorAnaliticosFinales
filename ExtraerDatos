@@ -275,6 +275,73 @@ def extract_fields(record):
     }
 
 
+# ---------------------------------------------------------------------------
+# CHEQUEO DEL PLAN DE ESTUDIOS (macro ChequearPlan.py)
+# ---------------------------------------------------------------------------
+
+def _importar_chequeador(doc):
+    """Busca e importa ChequearPlan.py. Devuelve el módulo o None.
+
+    Primero prueba el import directo (cuando las dos macros están en la misma
+    carpeta de scripts, que es lo normal) y, si no, agrega al path las carpetas
+    donde puede estar: la de esta macro, la de macros de usuario de LibreOffice
+    y la del .ods abierto.
+    """
+    try:
+        import ChequearPlan
+        return ChequearPlan
+    except ImportError:
+        pass
+
+    candidatos = []
+    try:
+        candidatos.append(os.path.dirname(os.path.abspath(__file__)))
+    except NameError:
+        pass
+
+    if sys.platform.startswith("win"):
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            candidatos.append(os.path.join(
+                appdata, "LibreOffice", "4", "user", "Scripts", "python"))
+    else:
+        candidatos.append(os.path.expanduser(
+            "~/.config/libreoffice/4/user/Scripts/python"))
+
+    try:
+        url = doc.getURL()
+        if url:
+            candidatos.append(os.path.dirname(uno_url_to_path(url)))
+    except Exception:
+        pass
+
+    for carpeta in candidatos:
+        if not carpeta or not os.path.isfile(os.path.join(carpeta, "ChequearPlan.py")):
+            continue
+        if carpeta not in sys.path:
+            sys.path.insert(0, carpeta)
+        try:
+            import ChequearPlan
+            return ChequearPlan
+        except ImportError:
+            continue
+    return None
+
+
+def chequear_plan_de_estudios(doc):
+    """Corre el chequeo contra el plan de estudios al terminar la extracción."""
+    modulo = _importar_chequeador(doc)
+    if modulo is None:
+        return
+    try:
+        # avisar_si_no_hay_plan=False: si todavía no cargaste el plan de esa
+        # carrera, no molesta con carteles; el botón de la hoja sí los muestra.
+        modulo.chequear_documento(doc, avisar_si_no_hay_plan=False)
+    except Exception as e:
+        msgbox("La extracción terminó bien, pero el chequeo del plan falló:\n"
+               + str(e))
+
+
 def ExtraerDatos(*args):
     ctx = uno.getComponentContext()
     smgr = ctx.ServiceManager
@@ -549,3 +616,8 @@ def ExtraerDatos(*args):
         msgbox("Error accediendo a la hoja 'Extractor':\n" + str(e))
     
     msgbox("Extracción finalizada.")
+
+    # 9. Chequear las materias contra el plan de estudios (si está instalada
+    #    la macro ChequearPlan.py). Si no está, no pasa nada: la extracción ya
+    #    terminó bien y el chequeo se puede hacer después con su propio botón.
+    chequear_plan_de_estudios(doc)
