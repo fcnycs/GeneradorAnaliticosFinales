@@ -1,3 +1,6 @@
+# Autor: Cristian Ariel Galego
+# Desarrollado con asistencia de Claude (IA de Anthropic).
+
 import uno
 import re
 import os
