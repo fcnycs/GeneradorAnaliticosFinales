@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Autor: Cristian Ariel Galego
+# Desarrollado con asistencia de Claude (IA de Anthropic).
 """
 Generador de Analíticos Finales en formato .odt
 ================================================
